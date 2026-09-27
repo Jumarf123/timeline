@@ -1,0 +1,7 @@
+/target/
+/dist/
+/bench-data/
+/artifacts/
+*.tmp
+/node_modules/
+/test-results/

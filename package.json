@@ -1,0 +1,12 @@
+{
+  "name": "timeline-ui-tests",
+  "private": true,
+  "scripts": {
+    "test": "node --test tests/i18n.mjs && node tests/webview.mjs",
+    "test:i18n": "node --test tests/i18n.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.58.2",
+    "prettier": "^3.9.9"
+  }
+}

@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <meta name="color-scheme" content="light" />
+    <title>Timeline</title>
+    <style>
+      /* INLINE_STYLE */
+    </style>
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span
+        >Timeline
+      </div>
+      <div class="header-actions">
+        <button id="open" class="button primary" data-icon="folder">
+          Открыть файл</button
+        ><button
+          id="settings"
+          class="button icon-button"
+          data-icon="settings"
+          title="Настройки"
+          aria-label="Настройки"
+        ></button>
+      </div>
+    </header>
+    <main>
+      <section id="welcome" class="welcome">
+        <button
+          id="welcome-open"
+          class="button primary large"
+          data-icon="folder"
+        >
+          Выбрать файл
+        </button>
+        <div class="drop-hint">или перетащите его в это окно</div>
+        <div class="format-list">
+          <span>CSV</span><span>TSV</span><span>JSON</span
+          ><span>LOG / TXT</span>
+        </div>
+        <button id="import-settings" class="text-button">
+          Параметры открытия
+        </button>
+      </section>
+      <section id="workspace" class="workspace" hidden>
+        <div class="toolbar">
+          <button id="toolbar-open" class="button" data-icon="folder">
+            Открыть
+          </button>
+          <form id="search-form" class="search-field">
+            <span data-icon="search"></span
+            ><input
+              id="search"
+              type="search"
+              placeholder="Найти во всей таблице…"
+              aria-label="Поиск по всем строкам"
+              autocomplete="off"
+              spellcheck="false"
+            /><button
+              type="button"
+              id="clear-search"
+              class="icon-button subtle"
+              data-icon="close"
+              aria-label="Очистить поиск"
+              hidden
+            ></button
+            ><kbd id="search-shortcut">Ctrl F</kbd>
+          </form>
+          <button id="filters" class="button" data-icon="filter">
+            Фильтры<span id="filter-count" class="count" hidden></span>
+          </button>
+          <button id="columns" class="button" data-icon="columns">
+            Столбцы
+          </button>
+          <span class="toolbar-divider"></span
+          ><button id="export" class="button" data-icon="download">
+            Экспорт
+          </button>
+          <button
+            id="toolbar-settings"
+            class="button icon-button"
+            data-icon="settings"
+            title="Настройки"
+            aria-label="Настройки"
+          ></button>
+        </div>
+        <div id="chips" class="chips" hidden></div>
+        <div class="table-and-inspector">
+          <section
+            id="data-grid"
+            class="table-card"
+            role="grid"
+            tabindex="0"
+            aria-label="Таблица. Стрелки — выбрать ячейку, Enter — открыть, Ctrl+C — скопировать."
+          >
+            <div id="table-header" class="table-header" role="row"></div>
+            <div id="viewport" class="viewport" role="rowgroup">
+              <div id="canvas" class="canvas"></div>
+            </div>
+            <div id="no-results" class="no-results" hidden>
+              <span data-icon="search"></span>
+              <h2>Ничего не найдено</h2>
+              <p>Попробуйте другой запрос или уберите условия фильтра.</p>
+              <button id="reset-empty" class="button">
+                Сбросить поиск и фильтры
+              </button>
+            </div>
+            <div id="table-busy" class="table-busy" hidden>
+              <span class="spinner"></span><span>Обрабатываем все строки…</span>
+            </div>
+            <footer class="table-footer">
+              <span id="range" class="muted"></span
+              ><span
+                id="view-summary"
+                class="muted"
+                aria-live="polite"
+                hidden
+              ></span>
+              <div class="pagination">
+                <label for="page-size">Строк на странице</label
+                ><select id="page-size">
+                  <option value="0">Все строки</option>
+                  <option value="100">100</option>
+                  <option value="500">500</option>
+                  <option value="1000">1 000</option>
+                  <option value="5000">5 000</option>
+                </select>
+                <div id="page-controls" class="page-controls" hidden>
+                  <button
+                    id="previous"
+                    class="icon-button"
+                    data-icon="left"
+                    title="Предыдущая страница"
+                    aria-label="Предыдущая страница"
+                  ></button
+                  ><span id="page-label"></span
+                  ><button
+                    id="next"
+                    class="icon-button"
+                    data-icon="right"
+                    title="Следующая страница"
+                    aria-label="Следующая страница"
+                  ></button>
+                </div>
+              </div>
+            </footer>
+          </section>
+          <aside id="inspector" class="inspector" hidden>
+            <div class="panel-title">
+              <h2>Содержимое ячейки</h2>
+              <button
+                id="close-inspector"
+                class="icon-button"
+                data-icon="close"
+                aria-label="Закрыть просмотр ячейки"
+              ></button>
+            </div>
+            <div id="cell-label" class="muted"></div>
+            <pre id="cell-value" tabindex="0"></pre>
+            <p id="cell-warning" class="muted" hidden>
+              Показан первый миллион символов. Полное значение доступно в
+              экспорте.
+            </p>
+            <button id="copy-cell" class="button" data-icon="copy">
+              Копировать
+            </button>
+          </aside>
+        </div>
+      </section>
+    </main>
+    <div id="job-bar" class="job-bar" hidden>
+      <span class="spinner"></span><span id="job-label"></span
+      ><progress id="job-progress" max="1" value="0"></progress
+      ><span id="job-percent"></span
+      ><button id="cancel" class="text-button">Отменить</button>
+    </div>
+    <div id="notice" class="notice" role="status" hidden>
+      <span id="notice-text"></span
+      ><button
+        id="notice-close"
+        class="icon-button"
+        data-icon="close"
+        aria-label="Закрыть сообщение"
+      ></button>
+    </div>
+    <div id="drop-overlay" class="drop-overlay" hidden>
+      <span data-icon="folder"></span>
+      <h2>Отпустите, чтобы открыть файл</h2>
+    </div>
+    <dialog id="dialog">
+      <div class="dialog-heading">
+        <div>
+          <h2 id="dialog-title"></h2>
+          <p id="dialog-description" class="muted"></p>
+        </div>
+        <button
+          id="dialog-close"
+          class="icon-button"
+          data-icon="close"
+          aria-label="Закрыть"
+        ></button>
+      </div>
+      <div id="dialog-content"></div>
+      <div id="dialog-actions" class="dialog-actions"></div>
+    </dialog>
+    <script>
+      /* INLINE_I18N */
+      /* INLINE_SCRIPT */
+    </script>
+  </body>
+</html>

@@ -1,0 +1,22 @@
+PID,Process,Path,User,Created,State,Details
+4,System,,NT AUTHORITY\SYSTEM,2026-09-23 08:00:00,Running,Kernel process
+488,smss.exe,C:\Windows\System32\smss.exe,NT AUTHORITY\SYSTEM,2026-09-23 08:00:01,Running,Windows Session Manager
+672,csrss.exe,C:\Windows\System32\csrss.exe,NT AUTHORITY\SYSTEM,2026-09-23 08:00:02,Running,Client Server Runtime
+748,wininit.exe,C:\Windows\System32\wininit.exe,NT AUTHORITY\SYSTEM,2026-09-23 08:00:02,Running,Windows Start-Up Application
+824,services.exe,C:\Windows\System32\services.exe,NT AUTHORITY\SYSTEM,2026-09-23 08:00:03,Running,Service Control Manager
+840,lsass.exe,C:\Windows\System32\lsass.exe,NT AUTHORITY\SYSTEM,2026-09-23 08:00:03,Running,Local Security Authority
+1032,svchost.exe,C:\Windows\System32\svchost.exe,NT AUTHORITY\SYSTEM,2026-09-23 08:00:04,Running,Host Process for Windows Services
+1096,svchost.exe,C:\Windows\System32\svchost.exe,LOCAL SERVICE,2026-09-23 08:00:04,Running,DHCP Client
+1480,explorer.exe,C:\Windows\explorer.exe,WORKSTATION\Analyst,2026-09-23 08:01:20,Running,Windows Explorer
+2056,SearchHost.exe,C:\Windows\SystemApps\SearchHost.exe,WORKSTATION\Analyst,2026-09-23 08:01:24,Running,Windows Search
+2312,powershell.exe,C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe,WORKSTATION\Analyst,2026-09-23 08:15:31,Review,"Command line: powershell.exe -NoProfile
+Evidence note: verify script origin, parent process and execution time."
+2840,MemProcFS.exe,C:\Tools\MemProcFS\MemProcFS.exe,WORKSTATION\Analyst,2026-09-23 08:20:05,Running,"Memory image mounted; export includes CSV, JSON and text reports."
+2964,chrome.exe,C:\Program Files\Google\Chrome\Application\chrome.exe,WORKSTATION\Analyst,2026-09-23 08:23:10,Running,Browser main process
+3108,chrome.exe,C:\Program Files\Google\Chrome\Application\chrome.exe,WORKSTATION\Analyst,2026-09-23 08:23:11,Running,Browser renderer
+3672,notepad.exe,C:\Windows\System32\notepad.exe,WORKSTATION\Analyst,2026-09-23 08:24:45,Running,Заметки аналитика — проверка Unicode
+4088,svchost.exe,C:\Users\Public\svchost.exe,WORKSTATION\Analyst,2026-09-23 09:41:02,Review,"Unexpected location. Compare with C:\Windows\System32\svchost.exe."
+4120,cmd.exe,C:\Windows\System32\cmd.exe,WORKSTATION\Analyst,2026-09-23 09:41:04,Review,Parent PID 4088
+4296,conhost.exe,C:\Windows\System32\conhost.exe,WORKSTATION\Analyst,2026-09-23 09:41:04,Running,Console Window Host
+4520,RuntimeBroker.exe,C:\Windows\System32\RuntimeBroker.exe,WORKSTATION\Analyst,2026-09-23 09:52:22,Running,Runtime Broker
+4892,Timeline.exe,C:\Tools\Timeline\Timeline.exe,WORKSTATION\Analyst,2026-09-23 10:00:00,Running,Read-only evidence review
