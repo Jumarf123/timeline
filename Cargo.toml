@@ -1,9 +1,9 @@
 [package]
 name = "timeline"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
-description = "Fast local viewer for large CSV, JSON and log files"
+description = "Local viewer for large tables, source files and forensic artifacts"
 build = "build.rs"
 default-run = "timeline"
 
@@ -19,9 +19,20 @@ regex = "1.11"
 rfd = "0.15"
 roaring = "0.11"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["arbitrary_precision"] }
 tempfile = "3"
 image = { version = "0.25", default-features = false, features = ["ico", "png"] }
+evtx = { version = "0.11.2", default-features = false, features = ["multithreading"] }
+quick-xml = "0.40"
+ntfs = "0.4"
+notatin = "1.0.1"
+ese-core = "0.2.2"
+rusqlite = { version = "0.37", features = ["bundled"] }
+windows-sys = { version = "0.61", features = ["Win32_Storage_Jet", "Win32_Storage_StructuredStorage"] }
+cfb = "0.14"
+rayon = "1.11"
+bumpalo = "3"
+memmap2 = "0.9"
 
 [build-dependencies]
 winresource = "0.1"

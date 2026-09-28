@@ -1,7 +1,7 @@
 // End-to-end tests against the real Rust executable and WebView2, without a mock backend.
 import { chromium } from "playwright";
 import { spawn } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { createServer } from "node:net";
 import assert from "node:assert/strict";
@@ -1056,10 +1056,12 @@ try {
     (path) => window.timelineReceive({ event: "open", path }),
     resolve(artifacts, "missing-file.csv"),
   );
-  await page.waitForFunction(() =>
-    document
-      .querySelector("#notice-text")
-      .textContent.startsWith("Could not open"),
+  await page.waitForFunction(
+    () =>
+      !document.querySelector("#notice").hidden &&
+      document
+        .querySelector("#notice-text")
+        .textContent.includes("missing-file.csv"),
   );
   assert(!/[А-Яа-яЁё]/.test(await page.locator("#notice-text").textContent()));
   await page.locator("#notice-close").click();
@@ -1081,9 +1083,413 @@ try {
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await page.waitForFunction(() => document.documentElement.lang === "ru");
   await page.screenshot({ path: resolve(artifacts, "interface-ru.png") });
+
+  // Observe real bridge responses; replace only the OS clipboard destination.
+  await page.evaluate(() => {
+    window.__copied = null;
+    window.__openedPath = null;
+    const receive = window.timelineReceive;
+    window.timelineReceive = (message) => {
+      if (message.ok && message.data?.path)
+        window.__openedPath = message.data.path;
+      if (message.ok && message.data?.kind && message.data?.path)
+        window.__openedKind = message.data.kind;
+      receive(message);
+    };
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (text) => {
+          window.__copied = text;
+        },
+      },
+    });
+  });
+  async function openFixture(name, content) {
+    const path = resolve(artifacts, name);
+    await writeFile(path, content);
+    await page.evaluate((path) => {
+      window.__openedPath = null;
+      window.timelineReceive({ event: "open", path });
+    }, path);
+    await page.waitForFunction(
+      (path) =>
+        window.__openedPath === path &&
+        document.querySelector("#job-bar").hidden,
+      path,
+    );
+    return path;
+  }
+  async function copied(expected, shortcut = "Control+KeyC") {
+    await page.evaluate(() => {
+      window.__copied = null;
+    });
+    if (shortcut) await page.keyboard.press(shortcut);
+    else await page.locator("#copy-selection").click();
+    await page.waitForFunction(() => window.__copied !== null);
+    assert.equal(await page.evaluate(() => window.__copied), expected);
+  }
+
+  await openFixture(
+    "selection.csv",
+    "Имя,Число,Скрытый,Описание\nalpha,10,secret-a,first\nbeta,2,secret-b,second\ngamma,1,secret-c,third\n",
+  );
+  await settled();
+  await dragColumn(1, 0);
+  await orderStartsWith([1, 0, 2, 3]);
+  await page.locator("#columns").click();
+  await page.getByRole("checkbox", { name: /^Скрытый/ }).uncheck();
+  await page.getByRole("button", { name: "Применить", exact: true }).click();
+  await orderStartsWith([1, 0, 3]);
+  await page
+    .getByRole("button", { name: "Сортировать: Число", exact: true })
+    .click();
+  await page.waitForFunction(
+    () =>
+      document.querySelector('.cell[data-column="0"] .value')?.textContent ===
+      "gamma",
+  );
+  await page.locator('.cell[data-index="0"][data-column="1"]').click();
+  await page
+    .locator('.cell[data-index="2"][data-column="3"]')
+    .click({ modifiers: ["Shift"] });
+  await page.waitForFunction(
+    () => document.querySelectorAll('.cell[aria-selected="true"]').length === 9,
+  );
+  await copied("1\tgamma\tthird\r\n2\tbeta\tsecond\r\n10\talpha\tfirst");
+  await page.screenshot({ path: resolve(artifacts, "range-selection.png") });
+  // A pointer rectangle has the same visible order as Shift-click.
+  const dragStart = await page
+    .locator('.cell[data-index="0"][data-column="1"]')
+    .boundingBox();
+  const dragEnd = await page
+    .locator('.cell[data-index="1"][data-column="3"]')
+    .boundingBox();
+  await page.mouse.move(
+    dragStart.x + dragStart.width / 2,
+    dragStart.y + dragStart.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    dragEnd.x + dragEnd.width / 2,
+    dragEnd.y + dragEnd.height / 2,
+    { steps: 8 },
+  );
+  await page.waitForFunction(
+    () => document.querySelectorAll('.cell[aria-selected="true"]').length === 6,
+  );
+  await page.mouse.up();
+  await copied("1\tgamma\tthird\r\n2\tbeta\tsecond", null);
+  // Hiding a selected endpoint must not silently copy a different column.
+  await page.locator("#columns").click();
+  await page.getByRole("checkbox", { name: /^Описание/ }).uncheck();
+  await page.getByRole("button", { name: "Применить", exact: true }).click();
+  await page.waitForFunction(
+    () => document.querySelector("#copy-selection").disabled,
+  );
+  assert.equal(await page.locator('.cell[aria-selected="true"]').count(), 0);
+
+  const manyRows = Array.from({ length: 1501 }, (_, i) => `row-${i},${i}`);
+  await openFixture(
+    "selection-offscreen.csv",
+    "Имя,Значение\n" + manyRows.join("\n"),
+  );
+  await settled();
+  await page.locator('.cell[data-index="0"][data-column="0"]').click();
+  await page.keyboard.press("Control+Shift+End");
+  await page.keyboard.press("Shift+ArrowRight");
+  await page.waitForFunction(() =>
+    document.querySelector('.cell[data-index="1500"][data-column="1"]'),
+  );
+  assert((await page.locator(".data-row").count()) < 100);
+  await copied(manyRows.map((line) => line.replace(",", "\t")).join("\r\n"));
+  // A drag on a short final page cannot select invisible rows from another page.
+  await page.locator("#page-size").selectOption("100");
+  await page.locator('.cell[data-index="0"][data-column="0"]').click();
+  await page.keyboard.press("Control+End");
+  await page.waitForFunction(() =>
+    document.querySelector('.cell[data-index="1500"]'),
+  );
+  const last = await page
+    .locator('.cell[data-index="1500"][data-column="0"]')
+    .boundingBox();
+  const portRect = await page.locator("#viewport").boundingBox();
+  await page.mouse.move(last.x + 100, last.y + last.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(last.x + 110, portRect.y + portRect.height - 2, {
+    steps: 8,
+  });
+  await page.mouse.up();
+  await copied("row-1500");
+  await page.locator("#page-size").selectOption("0");
+
+  const plainText =
+    "Заметки по исследованию\n\nСтрока с отступом остаётся частью текста.\n" +
+    "Длинный абзац сохраняет пробелы и читается с переносом строк. ".repeat(
+      35,
+    ) +
+    "\nПоследняя запись: ✓ завершено.\n";
+  await openFixture("notes.txt", plainText);
+  await page.locator(".cm-content").waitFor();
+  assert(await page.locator("#table-pane").isHidden());
+  assert(await page.locator("#document-mode").isHidden());
+  assert(await page.locator("#document-wrap").isChecked());
+  await page.waitForFunction(() =>
+    document.querySelector(".cm-content").classList.contains("cm-lineWrapping"),
+  );
+  await page.locator(".cm-content").focus();
+  await page.keyboard.press("Control+Home");
+  await page.keyboard.press("Shift+End");
+  await copied("Заметки по исследованию");
+  // Reconfiguring wrapping must preserve the original text and the selection.
+  await page.locator("#document-wrap").uncheck();
+  assert.equal(
+    await page.evaluate(() => window.timelineViewer.selectedText()),
+    "Заметки по исследованию",
+  );
+  await page.evaluate(() => {
+    window.__copied = null;
+  });
+  await page.locator("#document-copy").click();
+  await page.waitForFunction(() => window.__copied !== null);
+  assert.equal(
+    await page.evaluate(() => window.__copied),
+    "Заметки по исследованию",
+  );
+  await page.locator("#document-wrap").focus();
+  await page.keyboard.press("Control+f");
+  await page.locator(".cm-search input[name=search]").fill("завершено");
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("Escape");
+  assert.equal(
+    await page.evaluate(() => window.timelineViewer.selectedText()),
+    "завершено",
+  );
+  await openFixture("notes.log", plainText);
+  await page.locator(".cm-content").waitFor();
+  assert(!(await page.locator("#document-wrap").isChecked()));
+  assert.equal(
+    await page.evaluate(
+      () => JSON.parse(localStorage.getItem("timeline.settings")).documentWrap,
+    ),
+    false,
+  );
+  await page.locator("#document-wrap").check();
+  await page.locator(".cm-content").focus();
+  await page.keyboard.press("Control+Home");
+  await page.evaluate(() => {
+    window.__copied = null;
+  });
+  await page.locator("#document-copy").click();
+  await page.waitForFunction(() => window.__copied !== null);
+  assert.equal(await page.evaluate(() => window.__copied), plainText);
+  await page.screenshot({ path: resolve(artifacts, "text-reader.png") });
+  // Tabular TXT still opens directly as a table.
+  await openFixture(
+    "tabular.txt",
+    "Name\tPID\tDescription\nfirst\t12\tStarted\nsecond\t42\tStopped\n",
+  );
+  await settled();
+  assert(await page.locator("#document-pane").isHidden());
+  assert.equal(await page.locator(".header-cell").count(), 3);
+
+  const binaryUrl = Buffer.from(
+    (
+      await readFile(resolve(root, "tests/fixtures/binary-url.hex"), "utf8")
+    ).replace(/\s/g, ""),
+    "hex",
+  );
+  await openFixture("url-payload.dat", binaryUrl);
+  await page.waitForFunction(() => window.__openedKind === "binary");
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll('.cell[data-column="3"] .value')].some(
+      (cell) => cell.textContent.includes("http://example.test/"),
+    ),
+  );
+  assert.match(
+    await page.locator("#notice-text").textContent(),
+    /Извлечённые строки/,
+  );
+  await page.screenshot({ path: resolve(artifacts, "binary-readable.png") });
+  await page.locator("#binary-toggle").click();
+  await page.waitForFunction(
+    () =>
+      window.__openedKind === "hex" &&
+      document.querySelector("#job-bar").hidden,
+  );
+  await page
+    .getByRole("button", { name: "Сортировать: Hex", exact: true })
+    .waitFor();
+  await page.locator("#binary-toggle").click();
+  await page.waitForFunction(
+    () =>
+      window.__openedKind === "binary" &&
+      document.querySelector("#job-bar").hidden,
+  );
+  await openFixture("unrecognized.dat", Buffer.alloc(128, 0xff));
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll('.cell[data-column="3"] .value')].some(
+      (cell) => cell.textContent.includes("Читаемый текст не обнаружен"),
+    ),
+  );
+
+  const hexCellText = "http://example.test/проверка";
+  const hexCell = Buffer.from(hexCellText + "\0", "utf16le")
+    .toString("hex")
+    .match(/../g)
+    .join(" ")
+    .toUpperCase();
+  await openFixture("hex-cell.csv", "Name,Value\nURL," + hexCell + "\n");
+  await settled();
+  await page.locator('.cell[data-index="0"][data-column="1"]').dblclick();
+  await page.waitForFunction(
+    (text) => document.querySelector("#cell-value").textContent === text,
+    hexCellText,
+  );
+  assert(await page.locator("#cell-mode").isVisible());
+  await page.evaluate(() => {
+    window.__copied = null;
+  });
+  await page.locator("#copy-cell").click();
+  await page.waitForFunction(() => window.__copied !== null);
+  assert.equal(await page.evaluate(() => window.__copied), hexCellText);
+  await page.locator("#cell-mode").selectOption("raw");
+  assert.equal(await page.locator("#cell-value").textContent(), hexCell);
+  await page.evaluate(() => {
+    window.__copied = null;
+  });
+  await page.locator("#copy-cell").click();
+  await page.waitForFunction(() => window.__copied !== null);
+  assert.equal(await page.evaluate(() => window.__copied), hexCell);
+  await page.locator("#cell-mode").selectOption("decoded");
+  await page.screenshot({ path: resolve(artifacts, "hex-cell-readable.png") });
+
+  const preciseJson =
+    '{"wide":18446744073709551615,"decimal":0.12345678901234567890123456789,"nested":{"items":[true,null,"text"]}}';
+  await openFixture("precise.json", preciseJson);
+  await page.locator(".json-leaf").first().waitFor();
+  assert.match(
+    await page.locator("#document-content").innerText(),
+    /18446744073709551615/,
+  );
+  assert.match(
+    await page.locator("#document-content").innerText(),
+    /0\.12345678901234567890123456789/,
+  );
+  await page.getByText('"nested" {1}', { exact: true }).click();
+  await page.getByText('"items" [3]', { exact: true }).click();
+  await page.getByText('[2]: "text"', { exact: true }).waitFor();
+  await page.screenshot({ path: resolve(artifacts, "json-tree.png") });
+  await page.locator("#document-mode").selectOption("source");
+  await page.locator(".cm-line").first().waitFor();
+  assert((await page.locator(".cm-line").count()) > 3);
+  await page.locator("#document-raw").check();
+  await page.waitForFunction(
+    () => document.querySelectorAll(".cm-line").length === 1,
+  );
+  assert.equal(await page.locator(".cm-line").innerText(), preciseJson);
+  assert(await page.locator("#document-mode").isDisabled());
+
+  await openFixture(
+    "records.jsonl",
+    '{"id":9007199254740993,"message":"one"}\n{"id":9007199254740995,"message":"two"}\n',
+  );
+  await page.locator("#document-toggle").click();
+  await page.locator("#document-mode").selectOption("tree");
+  await page.getByText("[1] {2}", { exact: true }).click();
+  await page.getByText('"id": 9007199254740995', { exact: true }).waitFor();
+
+  const markdown =
+    '# Evidence\n\nText **bold** and `code`.\n\n| Name | Value |\n| --- | --- |\n| Run | 42 |\n\n<script>window.__unsafeMarkdown=true</script>\n<img src="https://example.test/track" onerror="window.__unsafeMarkdown=true">\n';
+  await openFixture("evidence.md", markdown);
+  await page.locator(".markdown-body h1").waitFor();
+  assert.equal(await page.locator(".markdown-body h1").innerText(), "Evidence");
+  assert.equal(await page.locator(".markdown-body table").count(), 1);
+  assert.equal(
+    await page.locator(".markdown-body script, .markdown-body img").count(),
+    0,
+  );
+  assert.equal(await page.evaluate(() => window.__unsafeMarkdown), undefined);
+  await page.screenshot({ path: resolve(artifacts, "markdown-preview.png") });
+  await page.locator("#document-raw").check();
+  await page.locator(".cm-line").first().waitFor();
+  assert.equal(
+    await page.locator(".cm-line").first().innerText(),
+    "# Evidence",
+  );
+  assert.equal(await page.locator(".markdown-body").count(), 0);
+
+  const script =
+    'function evidence() {\n\tconst path = "C:\\\\Windows";\n  return path;\n}\n';
+  await openFixture("source.js", script);
+  await page.locator(".cm-line").first().waitFor();
+  assert.equal(
+    (await page.locator(".cm-gutterElement").filter({ hasText: "1" }).count()) >
+      0,
+    true,
+  );
+  assert.equal(
+    await page.locator('.cm-content[contenteditable="false"]').count(),
+    1,
+  );
+  await page.locator(".cm-content").click();
+  await page.keyboard.press("Control+f");
+  await page.locator(".cm-search input[name=search]").waitFor();
+  await page.locator(".cm-search input[name=search]").fill("evidence");
+  await page.keyboard.press("Escape");
+  await page.screenshot({ path: resolve(artifacts, "source-viewer.png") });
+  await page.setViewportSize({ width: 620, height: 600 });
+  assert.equal(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth > innerWidth,
+    ),
+    false,
+  );
+  await page.setViewportSize({ width: 1280, height: 800 });
+
+  // Source chunks retain absolute line numbers and the final original content.
+  const longLine = "// " + "x".repeat(2040) + "\n";
+  await openFixture(
+    "notes-chunks.txt",
+    longLine.repeat(4300) + "const finalEvidence = 9007199254740993n;\n",
+  );
+  await page.locator(".cm-line").first().waitFor();
+  await page.locator("#document-next").click();
+  await page.waitForFunction(() =>
+    document
+      .querySelector("#document-range")
+      .textContent.startsWith("Фрагмент 2"),
+  );
+  const firstLineNumber = await page
+    .locator(".cm-lineNumbers .cm-gutterElement")
+    .nth(1)
+    .innerText();
+  assert(
+    Number(firstLineNumber) > 4000,
+    "Source chunks use absolute line numbers",
+  );
+  assert(await page.locator("#document-next").isDisabled());
+  await page.locator("#document-content").click();
+  await page.keyboard.press("Control+End");
+  await page.waitForFunction(() =>
+    document.querySelector(".cm-content").textContent.includes("finalEvidence"),
+  );
+  await page.screenshot({ path: resolve(artifacts, "source-chunk.png") });
+  await page.locator("#document-prev").click();
+  await page.waitForFunction(() =>
+    document
+      .querySelector("#document-range")
+      .textContent.startsWith("Фрагмент 1"),
+  );
+  assert(await page.locator("#document-prev").isDisabled());
+  assert.equal(
+    await page.locator(".cm-lineNumbers .cm-gutterElement").nth(1).innerText(),
+    "1",
+  );
+
   assert.deepEqual(errors, []);
   console.log(
-    "PASS: native search, date/number sorting, filters, pagination, 500257 virtual rows, default unpinned scrolling, optional pinning, keyboard navigation, manual/auto widths, column hover, native keyboard/wheel zoom, persistence, cell inspector, settings, small-window layout.",
+    "PASS: native search, date/number sorting, filters, pagination, 500257 virtual rows, column order/pinning/widths, keyboard/wheel zoom, persistence, cell inspector, settings, small-window layout, drag/Shift/offscreen range copying, text/log reader and table detection, persistent word wrap, text copying, readable DAT and Hex views, decoded/raw hex cell copying, precise JSON/JSONL trees, Markdown raw/preview, read-only source search and paged line numbers.",
   );
 } catch (error) {
   if (page) {

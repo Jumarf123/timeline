@@ -19,13 +19,13 @@
 
 ## Русский
 
-Timeline — бесплатный просмотрщик CSV, JSON и текстовых журналов для Windows. Открывайте файлы, которые много весят, находите записи, сортируйте и фильтруйте данные, затем можете сохранить результат в CSV.
+Timeline — бесплатный просмотрщик таблиц, исходников и forensic-файлов для Windows. Открывайте файлы, которые много весят, находите записи, сортируйте и фильтруйте данные, затем можете сохранить результат в CSV.
 
 
 ### старт
 
 1. [Скачайте Timeline.exe](https://github.com/Jumarf123/timeline/releases/latest/download/Timeline.exe).
-2. Запустите приложение.
+2. Запустите приложение. Окно сразу открывается развёрнутым.
 3. Нажмите **Открыть**, перетащите файл в окно или используйте **Ctrl+O**.
 4. Введите запрос в поиск - то что вы хотите найти.
 
@@ -47,9 +47,15 @@ Timeline — бесплатный просмотрщик CSV, JSON и текст
 
 ### Форматы и кодировки
 
+**Новое в 0.2.0:** EVTX, XML, ESE/EDB, registry DAT, SQLite, USN и Autoruns ARN; дерево JSON/JSONL; Markdown и подсветка исходников; читаемые UTF-8/UTF-16 строки из бинарных полей с сохранением исходных байтов. Нетабличные TXT открываются как документ с переносом строк, поиском и копированием текста. Ход разбора, счётчики и ошибки видны в окне.
+
+Поиск поддерживает режимы **Авто / Текст / Regex**, флаги `(?i)` и запросы `ext:exe;jar regex:…`. Диапазоны выделяются мышью и с Shift, Ctrl+C копирует полные значения для вставки в Excel. При необходимости чтения защищённого файла программа предлагает повторное открытие с правами администратора через UAC.
+
+[Подробности форматов, regex и восстановления](docs/FORMATS.md) · [Изменения 0.2.0](docs/RELEASE-NOTES.md)
+
 - **CSV / TSV / PSV:** автоматический выбор разделителя, поля в кавычках и переносы строк внутри ячеек. Разделитель и наличие заголовков можно задать вручную.
 - **JSON / JSONL / NDJSON:** массивы JSON и записи по одной на строку.
-- **TXT / LOG:** текстовые журналы, одна строка — одна запись.
+- **TXT / LOG:** автоматическое распознавание таблиц, обычный текст — в режиме документа. Автоопределение TXT можно отключить в настройках.
 - **Кодировки:** UTF-8, UTF-16 LE/BE, Windows-1251 и Windows-1252. UTF-16 определяется по BOM; старые кодировки выбираются в параметрах открытия.
 
 ### Управление
@@ -62,7 +68,8 @@ Timeline — бесплатный просмотрщик CSV, JSON и текст
 | Сортировать | Нажать заголовок: по возрастанию → по убыванию → исходный порядок |
 | Перейти по ячейкам | **Стрелки**, **Page Up / Page Down** |
 | Начало / конец результата | **Ctrl+Home / Ctrl+End** |
-| Открыть / скопировать выбранную ячейку | **Enter / Ctrl+C** |
+| Открыть ячейку / скопировать выделенный диапазон | **Enter / Ctrl+C** |
+| Расширить выделение | **Shift+щелчок / Shift+стрелки**, либо потянуть мышью |
 | Изменить / сбросить масштаб | **Ctrl+плюс / Ctrl+минус**, **Ctrl+колёсико / Ctrl+0** |
 
 Горячие клавиши работают независимо от раскладки. Ручное изменение ширины доступно и при включённом автоподборе.
@@ -90,7 +97,7 @@ Timeline — бесплатный просмотрщик CSV, JSON и текст
 
 ## English
 
-Timeline is a free local viewer for CSV, JSON and text logs on Windows. Open large files, find records, sort and filter data, and export the results to CSV.
+Timeline is a free local viewer for tables, source files and forensic artifacts on Windows. Open large files, find records, sort and filter data, and export the results to CSV.
 
 **Your files are processed on your computer. Their contents are not uploaded, and source files remain unchanged.**
 
@@ -119,9 +126,15 @@ Timeline is a free local viewer for CSV, JSON and text logs on Windows. Open lar
 
 ### Formats and encodings
 
+**New in 0.2.0:** EVTX, XML, ESE/EDB, registry hives, SQLite, USN and Autoruns ARN; JSON/JSONL trees; Markdown and highlighted source; readable UTF-8/UTF-16 binary fields with preserved raw bytes. Plain TXT opens as a document with wrapping, search and copying. Import phases, counts and errors remain visible.
+
+Search supports **Auto / Text / Regex**, inline flags and `ext:exe;jar regex:…` queries. Select ranges using the mouse or Shift and copy full values with Ctrl+C. Protected files can be reopened through an explicit Windows UAC prompt.
+
+[Format details, regex examples and recovery limits](docs/FORMATS.md) · [0.2.0 release notes](docs/RELEASE-NOTES.md)
+
 - **CSV / TSV / PSV:** delimiter detection, quoted fields and multiline cells. Choose the delimiter and whether the first row contains headers.
 - **JSON / JSONL / NDJSON:** JSON arrays and one record per line.
-- **TXT / LOG:** text logs, one record per line.
+- **TXT / LOG:** automatic table detection; other text opens in document view. TXT detection can be disabled in Settings.
 - **Encodings:** UTF-8, UTF-16 LE/BE, Windows-1251 and Windows-1252. UTF-16 is detected from its BOM; select legacy encodings in import settings.
 
 ### Controls
@@ -134,7 +147,8 @@ Timeline is a free local viewer for CSV, JSON and text logs on Windows. Open lar
 | Sort | Click a header: ascending → descending → original order |
 | Navigate cells | **Arrow keys**, **Page Up / Page Down** |
 | First / last record | **Ctrl+Home / Ctrl+End** |
-| Open / copy the selected cell | **Enter / Ctrl+C** |
+| Open a cell / copy the selection | **Enter / Ctrl+C** |
+| Extend a selection | **Shift+click / Shift+arrows**, or drag with the mouse |
 | Adjust / reset zoom | **Ctrl+plus / Ctrl+minus**, **Ctrl+mouse wheel / Ctrl+0** |
 
 Shortcuts work across keyboard layouts. Manual resizing also works while automatic column fitting is enabled.

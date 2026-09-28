@@ -72,12 +72,29 @@
               hidden
             ></button
             ><kbd id="search-shortcut">Ctrl F</kbd>
+            <select id="search-mode" aria-label="Режим поиска">
+              <option value="auto">Авто</option>
+              <option value="text">Текст</option>
+              <option value="regex">Regex</option>
+            </select>
           </form>
           <button id="filters" class="button" data-icon="filter">
             Фильтры<span id="filter-count" class="count" hidden></span>
           </button>
           <button id="columns" class="button" data-icon="columns">
             Столбцы
+          </button>
+          <button id="document-toggle" class="button" hidden>Просмотр</button>
+          <button id="binary-toggle" class="button" hidden>
+            Исходные байты
+          </button>
+          <button
+            id="copy-selection"
+            class="button"
+            data-icon="copy"
+            title="Копировать выделенные ячейки"
+          >
+            Копировать
           </button>
           <span class="toolbar-divider"></span
           ><button id="export" class="button" data-icon="download">
@@ -92,11 +109,59 @@
           ></button>
         </div>
         <div id="chips" class="chips" hidden></div>
-        <div class="table-and-inspector">
+        <section id="document-pane" class="document-pane" hidden>
+          <div class="document-toolbar">
+            <select id="document-mode" aria-label="Вид документа">
+              <option value="source">Исходный текст</option>
+              <option value="tree">Дерево JSON</option>
+              <option value="preview">Предпросмотр</option>
+              <option value="raw">Без подсветки</option>
+            </select>
+            <label id="document-raw-label"
+              ><input id="document-raw" type="checkbox" /> Показать исходный
+              вид</label
+            >
+            <label
+              ><input id="document-wrap" type="checkbox" /> Перенос строк</label
+            >
+            <button
+              id="document-search"
+              class="button"
+              data-icon="search"
+              title="Поиск в текущем фрагменте (Ctrl+F)"
+            >
+              Найти
+            </button>
+            <button
+              id="document-copy"
+              class="button"
+              data-icon="copy"
+              title="Копировать выделение или текущий фрагмент"
+            >
+              Копировать текст
+            </button>
+            <span id="document-range" class="muted"></span>
+            <button id="document-prev" class="button">Назад</button
+            ><button id="document-next" class="button">Далее</button>
+          </div>
+          <p
+            id="document-status"
+            class="document-status"
+            role="status"
+            hidden
+          ></p>
+          <div
+            id="document-content"
+            class="document-content"
+            tabindex="0"
+          ></div>
+        </section>
+        <div class="table-and-inspector" id="table-pane">
           <section
             id="data-grid"
             class="table-card"
             role="grid"
+            aria-multiselectable="true"
             tabindex="0"
             aria-label="Таблица. Стрелки — выбрать ячейку, Enter — открыть, Ctrl+C — скопировать."
           >
@@ -163,6 +228,10 @@
               ></button>
             </div>
             <div id="cell-label" class="muted"></div>
+            <select id="cell-mode" aria-label="Вид значения" hidden>
+              <option value="decoded">Читаемый текст</option>
+              <option value="raw">Исходное значение</option>
+            </select>
             <pre id="cell-value" tabindex="0"></pre>
             <p id="cell-warning" class="muted" hidden>
               Показан первый миллион символов. Полное значение доступно в
@@ -175,7 +244,7 @@
         </div>
       </section>
     </main>
-    <div id="job-bar" class="job-bar" hidden>
+    <div id="job-bar" class="job-bar" role="status" aria-live="polite" hidden>
       <span class="spinner"></span><span id="job-label"></span
       ><progress id="job-progress" max="1" value="0"></progress
       ><span id="job-percent"></span
@@ -212,6 +281,7 @@
     </dialog>
     <script>
       /* INLINE_I18N */
+      /* INLINE_VIEWER */
       /* INLINE_SCRIPT */
     </script>
   </body>

@@ -2,11 +2,30 @@
   "name": "timeline-ui-tests",
   "private": true,
   "scripts": {
+    "build:web": "esbuild web/viewer-entry.js --bundle --minify --format=iife --outfile=web/viewer.bundle.js --legal-comments=eof",
     "test": "node --test tests/i18n.mjs && node tests/webview.mjs",
     "test:i18n": "node --test tests/i18n.mjs"
   },
   "devDependencies": {
+    "esbuild": "^0.28.2",
     "playwright": "^1.58.2",
     "prettier": "^3.9.9"
+  },
+  "dependencies": {
+    "@codemirror/commands": "^6.11.1",
+    "@codemirror/lang-javascript": "^6.2.5",
+    "@codemirror/lang-json": "^6.0.2",
+    "@codemirror/lang-markdown": "^6.5.2",
+    "@codemirror/lang-python": "^6.2.1",
+    "@codemirror/lang-xml": "^6.1.0",
+    "@codemirror/language": "^6.12.4",
+    "@codemirror/legacy-modes": "^6.5.4",
+    "@codemirror/search": "^6.7.2",
+    "@codemirror/state": "^6.7.6",
+    "@codemirror/view": "^6.43.13",
+    "@lezer/highlight": "^1.2.4",
+    "dompurify": "^3.4.16",
+    "lossless-json": "^4.3.1",
+    "marked": "^18.0.14"
   }
 }

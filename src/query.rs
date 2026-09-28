@@ -2,7 +2,7 @@
 //! Sorted/filtered views retain row numbers and byte offsets, not entire records.
 use crate::{
     data::{Dataset, Progress, preview},
-    search::{CompiledFilter, FilterOp, FilterRule, FindSpec, Scope, compile_pattern},
+    search::{CompiledFilter, FilterOp, FilterRule, SearchMode, TableSearch},
 };
 use anyhow::{Context, Result, bail, ensure};
 use chrono::{DateTime, NaiveDate, NaiveDateTime};
@@ -112,6 +112,9 @@ fn timestamp(value: &str) -> Option<i128> {
 }
 
 pub fn infer_types(data: &Dataset) -> Result<Vec<ColumnType>> {
+    infer_types_with_progress(data, &Progress::default())
+}
+pub fn infer_types_with_progress(data: &Dataset, progress: &Progress) -> Result<Vec<ColumnType>> {
     let mut stats = vec![(0, 0, 0, 0); data.headers.len()];
     // Sample the beginning and the end without walking a multi-gigabyte file twice.
     for (start, count) in [
@@ -127,6 +130,7 @@ pub fn infer_types(data: &Dataset) -> Result<Vec<ColumnType>> {
         let mut reader = data.reader_at(start)?;
         let mut record = ByteRecord::new();
         for _ in 0..count {
+            progress.check()?;
             if !reader.read_byte_record(&mut record)? {
                 break;
             }
@@ -142,6 +146,9 @@ pub fn infer_types(data: &Dataset) -> Result<Vec<ColumnType>> {
                 stats.2 += usize::from(date(text).is_some());
                 stats.3 += usize::from(timestamp(text).is_some());
             }
+            progress
+                .done
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
     }
     Ok(stats
@@ -173,6 +180,7 @@ pub fn infer_types(data: &Dataset) -> Result<Vec<ColumnType>> {
 pub struct Query {
     pub text: String,
     pub regex: bool,
+    pub search_mode: SearchMode,
     pub case_sensitive: bool,
     pub filters: Vec<Filter>,
     pub sort: Option<Sort>,
@@ -373,12 +381,15 @@ pub fn execute(
     let regex = if query.text.is_empty() {
         None
     } else {
-        Some(compile_pattern(&FindSpec {
-            text: query.text.clone(),
-            regex: query.regex,
-            case_sensitive: query.case_sensitive,
-            scope: Scope::Table,
-        })?)
+        Some(TableSearch::new(
+            &query.text,
+            if query.regex {
+                SearchMode::Regex
+            } else {
+                query.search_mode
+            },
+            query.case_sensitive,
+        )?)
     };
     progress.check()?;
     if query.sort.is_none() && filters.is_empty() && regex.is_none() {
@@ -429,11 +440,7 @@ pub fn execute(
                     if !filters.iter().all(|f| f.matches(&record)) {
                         continue;
                     }
-                    if regex.as_ref().is_some_and(|r| {
-                        !record
-                            .iter()
-                            .any(|f| r.is_match(std::str::from_utf8(f).unwrap_or("")))
-                    }) {
+                    if regex.as_ref().is_some_and(|r| !r.matches(&record)) {
                         continue;
                     }
                     let reference = RowRef { row, byte };
@@ -593,10 +600,7 @@ impl View {
         headers: &[String],
     ) -> Result<u64> {
         ensure!(headers.len() == data.headers.len(), "Столбец недоступен");
-        ensure!(
-            path != data.original_path && path != data.path,
-            "Нельзя перезаписать исходный файл"
-        );
+        data.check_export_path(path)?;
         let parent = path
             .parent()
             .filter(|p| !p.as_os_str().is_empty())

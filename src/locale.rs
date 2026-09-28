@@ -82,6 +82,22 @@ fn region_from_locale(locale: &str) -> String {
 }
 
 const MESSAGES: &[(&str, &str)] = &[
+    (
+        "Для чтения этого файла нужны права администратора",
+        "Administrator privileges are required to read this file",
+    ),
+    (
+        "Слишком большое выделение. Используйте экспорт CSV",
+        "The selection is too large. Use CSV export",
+    ),
+    (
+        "Некорректный список ext: (пример: ext:exe;jar;zip)",
+        "Invalid ext: list (example: ext:exe;jar;zip)",
+    ),
+    (
+        "Не удалось запросить права администратора",
+        "Could not request administrator privileges",
+    ),
     ("Операция отменена", "Operation cancelled"),
     ("Операция устарела", "Operation superseded"),
     ("Нет номера запроса", "Missing request ID"),

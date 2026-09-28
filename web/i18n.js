@@ -2,6 +2,83 @@
 (() => {
   "use strict";
   const english = {
+    "Строк: {count}": "Lines: {count}",
+    "Вид значения": "Value view",
+    "Читаемый текст": "Readable text",
+    "Исходное значение": "Original value",
+    "Исходные байты": "Original bytes",
+    "Читаемый вид": "Readable view",
+    "Бинарный файл: смещения, шестнадцатеричные байты и ASCII. Структура формата не интерпретируется.":
+      "Binary file: byte offsets, hexadecimal data and ASCII. No format-specific interpretation.",
+    "Извлечённые строки: вероятный текст UTF-8/UTF-16 с исходными смещениями. Структура формата интерпретирована не полностью. Кнопка «Исходные байты» показывает все байты, включая нераспознанные данные.":
+      "Binary strings view: probable UTF-8/UTF-16 text with original byte offsets, not a complete interpretation of this file format. Open as Hex to inspect every original byte, including unrecognized data.",
+    "Читаемый текст не обнаружен. Кнопка «Исходные байты» показывает все исходные данные.":
+      "No confidently readable text was found. Open as Hex to inspect all original bytes.",
+    "Очень длинные строки разделены на фрагменты, чтобы ограничить потребление памяти.":
+      "Very long text spans are split at read-window boundaries to keep memory use bounded.",
+    "Двоичные значения показывают вероятный читаемый текст; Raw data сохраняет исходные шестнадцатеричные байты.":
+      "Binary values show probable readable strings when present; Raw data retains the original hexadecimal bytes.",
+    "Двоичные значения показывают вероятный читаемый текст; столбцы $raw сохраняют исходные шестнадцатеричные байты.":
+      "Binary values show probable readable strings when present; $raw columns retain their original hexadecimal bytes.",
+    "Снимок реестра: журналы транзакций и удалённые ключи не восстанавливаются.":
+      "Registry hive snapshot; transaction logs and deleted keys are not replayed.",
+    "Снимок ESE: журналы транзакций не применяются. Вынесенные или сжатые длинные значения могут оставаться двоичными. Двоичные значения показывают вероятный читаемый текст; столбцы $raw сохраняют исходные шестнадцатеричные байты.":
+      "ESE snapshot: transaction logs are not replayed. Separated/compressed long values may remain binary. Binary values show probable readable strings when present; $raw columns retain their original hexadecimal bytes.",
+    "Снимок основной базы SQLite: отдельные файлы WAL не применяются. Двоичные значения показывают вероятный читаемый текст; столбцы $raw сохраняют исходные шестнадцатеричные байты.":
+      "SQLite main database snapshot; separate WAL files are not applied. Binary values show probable readable strings when present; $raw columns retain their original hexadecimal bytes.",
+    "Неизвестные двоичные поля Autoruns показывают вероятный читаемый текст; столбцы $raw сохраняют исходные шестнадцатеричные байты.":
+      "Unknown Autoruns binary fields show probable readable strings when present; $raw columns retain their original hexadecimal bytes.",
+    "Не удалось полностью разобрать {format}: {error}. Показаны извлечённые строки. Все исходные данные доступны по кнопке «Исходные байты».":
+      "Could not fully parse {format}: {error}. Showing extracted strings; original bytes are available in Hex mode.",
+    "Перенос строк": "Word wrap",
+    "Текст документа": "Document text",
+    Найти: "Find",
+    "Все совпадения": "All matches",
+    "Слово целиком": "Whole word",
+    "Перейти к строке": "Go to line",
+    Перейти: "Go",
+    "Поиск в текущем фрагменте (Ctrl+F)": "Search this part (Ctrl+F)",
+    "Копировать выделение или текущий фрагмент":
+      "Copy the selection or the current part",
+    "Копировать текст": "Copy text",
+    "Ожидаем подтверждения UAC…": "Waiting for UAC confirmation…",
+    "Дерево недоступно для этого фрагмента JSON. Показан исходный текст без потери данных.":
+      "The JSON tree is unavailable for this part. The original text is shown without data loss.",
+    "Читаем файл…": "Reading file…",
+    "Преобразуем кодировку…": "Converting encoding…",
+    "Разбираем записи…": "Parsing records…",
+    "Подготавливаем таблицу…": "Preparing table…",
+    "Определяем типы столбцов…": "Detecting column types…",
+    "Записей: {count}": "Records: {count}",
+    "{seconds} с": "{seconds} s",
+    "Байты (Hex)": "Bytes (Hex)",
+    "Не удалось разобрать файл": "Could not parse the file",
+    "Открыть как байты": "Open as bytes",
+    "Режим поиска": "Search mode",
+    Авто: "Auto",
+    "Авто распознаёт regex:, ext: и (?i). Остальной текст ищется буквально.":
+      "Auto recognizes regex:, ext: and (?i). Other text is matched literally.",
+    "Распознавать таблицы в TXT автоматически":
+      "Automatically detect tables in TXT",
+    Просмотр: "Viewer",
+    Таблица: "Table",
+    "Копировать выделенные ячейки": "Copy selected cells",
+    "Вид документа": "Document view",
+    "Исходный текст": "Source text",
+    "Дерево JSON": "JSON tree",
+    Предпросмотр: "Preview",
+    "Без подсветки": "No highlighting",
+    "Показать исходный вид": "Show raw source",
+    Назад: "Previous",
+    Далее: "Next",
+    "Показать ещё": "Show more",
+    "Нужны права администратора": "Administrator access required",
+    "Windows ограничила доступ к этому файлу. Откройте отдельное окно Timeline с правами администратора и подтвердите запрос UAC.":
+      "Windows restricted access to this file. Open a separate Timeline window as administrator and confirm the UAC prompt.",
+    "Выбрать другой файл": "Choose another file",
+    "Открыть от имени администратора": "Open as administrator",
+    "Фрагмент {number} · поиск по всему файлу — в таблице":
+      "Part {number} · use the table to search the entire file",
     "1 000": "1,000",
     "5 000": "5,000",
     "Открыть файл": "Open file",
@@ -195,9 +272,28 @@
     for (const { node, attribute, key } of staticAttributes)
       if (node.isConnected) node.setAttribute(attribute, t(key));
   }
+  const russianDiagnostics = new Map(
+    Object.entries(english).map(([ru, en]) => [en, ru]),
+  );
+  function diagnostic(message) {
+    if (language !== "ru") return message;
+    const fallback = message.match(
+      /^Could not fully parse (.+?): ([\s\S]+)\. Showing extracted strings; original bytes are available in Hex mode\.$/,
+    );
+    return (
+      russianDiagnostics.get(message) ||
+      (fallback
+        ? t(
+            "Не удалось полностью разобрать {format}: {error}. Показаны извлечённые строки. Все исходные данные доступны по кнопке «Исходные байты».",
+            { format: fallback[1], error: fallback[2] },
+          )
+        : message)
+    );
+  }
   setLanguage(preference);
   window.timelineI18n = {
     t,
+    diagnostic,
     setLanguage,
     collectStatic,
     applyStatic,

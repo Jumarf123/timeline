@@ -62,11 +62,14 @@
     pinFirstColumn: false,
     interfaceZoom: 1,
     regex: false,
+    searchMode: "auto",
+    autoText: true,
     caseSensitive: false,
     header: true,
     encoding: "auto",
     format: "auto",
     delimiter: "",
+    documentWrap: true,
   };
   let settings;
   try {
@@ -81,6 +84,12 @@
     settings.pageSize = 0;
   if (!["auto", "ru", "en"].includes(settings.language))
     settings.language = "auto";
+  if (settings.regex) {
+    settings.searchMode = "regex";
+    settings.regex = false;
+  }
+  if (!["auto", "text", "regex"].includes(settings.searchMode))
+    settings.searchMode = "auto";
   const zoomLevels = [0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
   if (!zoomLevels.includes(settings.interfaceZoom)) settings.interfaceZoom = 1;
   const state = {
@@ -102,6 +111,7 @@
     text: "",
     applied: { filters: [], sort: null, text: "" },
     selected: null,
+    anchor: null,
     cache: new Map(),
     cacheKey: "",
     loading: false,
@@ -113,6 +123,12 @@
     frame: 0,
     picking: false,
     inspectorVersion: 0,
+    cell: null,
+    document: null,
+    documentOffsets: [0],
+    documentLines: [1],
+    documentPage: 0,
+    documentVersion: 0,
   };
   let sequence = 0,
     searchTimer,
@@ -146,9 +162,18 @@
           : 32;
       state.contentWidths[column] = Math.max(
         state.contentWidths[column] || 0,
-        textWidth(text, 500) + padding,
+        textWidth(displayCell(text, column, row), 500) + padding,
       );
     }
+  }
+  function displayCell(text, column, row) {
+    // Only the binary parser's explicit placeholder is a UI message.
+    return state.file?.kind === "binary" &&
+      column === 3 &&
+      state.headers[2] === "Encoding" &&
+      row?.cells[2] === "Binary"
+      ? i18n.diagnostic(text)
+      : text;
   }
   function firstColumn() {
     return (
@@ -240,9 +265,8 @@
     }
     if (message.event === "progress") {
       if (message.id !== state.busy) return;
-      $("job-label").textContent = jobLabel(message.kind || state.jobKind);
-      $("job-progress").value = message.fraction;
-      $("job-percent").textContent = Math.round(message.fraction * 100) + "%";
+      state.jobProgress = message;
+      renderProgress(message);
       return;
     }
     const handler = pending.get(message.id);
@@ -256,7 +280,11 @@
             (i18n.language === "en" ? message.error_en : message.error) ||
               t("Не удалось выполнить операцию"),
           ),
-          { cancelled: message.cancelled },
+          {
+            cancelled: message.cancelled,
+            needsElevation: message.needs_elevation,
+            canOpenRaw: message.can_open_raw,
+          },
         ),
       );
   };
@@ -276,6 +304,35 @@
           ? "Сохраняем CSV…"
           : "Обрабатываем все строки…",
     );
+  }
+  function renderProgress(message) {
+    const phases = {
+      read: "Читаем файл…",
+      decode: "Преобразуем кодировку…",
+      parse: "Разбираем записи…",
+      index: "Подготавливаем таблицу…",
+      prepare: "Определяем типы столбцов…",
+    };
+    const kind = message.kind || state.jobKind;
+    $("job-label").textContent =
+      kind === "open" && phases[message.phase]
+        ? t(phases[message.phase])
+        : jobLabel(kind);
+    $("job-bar").dataset.phase = message.phase || kind;
+    const fraction = Number.isFinite(message.fraction)
+      ? Math.max(0, Math.min(1, message.fraction))
+      : null;
+    if (typeof fraction === "number") $("job-progress").value = fraction;
+    else $("job-progress").removeAttribute("value");
+    const parts = [];
+    if (typeof message.records === "number")
+      parts.push(t("Записей: {count}", { count: fmt(message.records) }));
+    if (typeof fraction === "number")
+      parts.push(Math.min(99, Math.floor(fraction * 100)) + "%");
+    parts.push(
+      t("{seconds} с", { seconds: fmt(Math.floor(message.elapsed || 0)) }),
+    );
+    $("job-percent").textContent = parts.join(" · ");
   }
   function displayHeaders(file) {
     const generated = new Map(
@@ -309,7 +366,16 @@
       });
     }
     $("table-header").dataset.key = "";
-    if (state.busy) $("job-label").textContent = jobLabel(state.jobKind);
+    if (state.file) {
+      $("binary-toggle").textContent = t(
+        state.file.kind === "hex" ? "Читаемый вид" : "Исходные байты",
+      );
+      $("document-toggle").textContent = t(
+        $("document-pane").hidden ? "Просмотр" : "Таблица",
+      );
+    }
+    if (state.busy)
+      renderProgress(state.jobProgress || { kind: state.jobKind });
     $("notice").hidden = true;
     updateControls();
     if (!$("inspector").hidden && state.selected)
@@ -318,8 +384,9 @@
   function busy(promise, kind, label) {
     state.busy = promise.id;
     state.jobKind = kind;
+    state.jobProgress = null;
     $("job-label").textContent = label;
-    $("job-progress").value = 0;
+    $("job-progress").removeAttribute("value");
     $("job-percent").textContent = "";
     $("job-bar").hidden = false;
     $("table-busy").hidden = !state.file;
@@ -351,22 +418,60 @@
       $("welcome-open").disabled = false;
     }
   }
-  async function openFile(path) {
+  async function openFile(path, overrides = {}) {
     cancelColumnDrag();
     clearTimeout(searchTimer);
     ++state.queryVersion;
-    const request = rpc("open", { path, options: settings });
+    const request = rpc("open", {
+      path,
+      options: { ...settings, ...overrides },
+    });
     busy(request, "open", t("Открываем файл…"));
     try {
       const data = await request;
       if (state.busy !== request.id) return;
       state.file = data;
+      $("notice").hidden = true;
+      state.document = null;
+      state.documentOffsets = [0];
+      state.documentLines = [1];
+      state.documentPage = 0;
+      ++state.documentVersion;
+      showTable();
+      $("document-toggle").hidden = ![
+        "text",
+        "json",
+        "jsonl",
+        "xml",
+        "markdown",
+        "javascript",
+        "python",
+        "powershell",
+        "shell",
+        "yaml",
+      ].includes(data.kind);
+      $("document-mode").value =
+        data.kind === "markdown"
+          ? "preview"
+          : data.kind === "json"
+            ? "tree"
+            : "source";
+      $("document-raw").checked = false;
+      $("binary-toggle").hidden = !["binary", "hex"].includes(data.kind);
+      $("binary-toggle").textContent = t(
+        data.kind === "hex" ? "Читаемый вид" : "Исходные байты",
+      );
       state.revision = data.revision;
       state.total = data.total;
       state.rows = data.rows;
       state.headers = displayHeaders(data);
       state.types = data.types;
-      state.visible = data.headers.map(() => true);
+      state.visible = data.headers.map(
+        (name) =>
+          !(
+            ["ese", "sqlite"].includes(data.kind) && name.startsWith("$raw/")
+          ) && !(data.kind === "registry" && name === "Raw data"),
+      );
       state.columnOrder = data.headers.map((_, i) => i);
       $("table-header").dataset.key = "";
       state.widths = state.headers.map((name, i) =>
@@ -391,6 +496,7 @@
       state.sort = null;
       state.text = "";
       state.selected = null;
+      state.anchor = null;
       state.applied = { filters: [], sort: null, text: "" };
       ++state.inspectorVersion;
       $("search").value = "";
@@ -403,6 +509,21 @@
       viewport.scrollLeft = 0;
       updateControls();
       await primeRows();
+      if (data.warnings?.length)
+        notify(data.warnings.map(i18n.diagnostic).join("\n"), true);
+      if (
+        [
+          "text",
+          "json",
+          "markdown",
+          "javascript",
+          "python",
+          "powershell",
+          "shell",
+          "yaml",
+        ].includes(data.kind)
+      )
+        await showDocument();
       if (data.irregular)
         notify(
           t(
@@ -411,8 +532,57 @@
           ),
         );
     } catch (error) {
-      if (!error.cancelled && state.busy === request.id)
-        notify(error.message, true);
+      if (!error.cancelled && state.busy === request.id) {
+        if (error.needsElevation) {
+          showDialog(
+            t("Нужны права администратора"),
+            t(
+              "Windows ограничила доступ к этому файлу. Откройте отдельное окно Timeline с правами администратора и подтвердите запрос UAC.",
+            ),
+          );
+          action(t("Выбрать другой файл"), () => {
+            $("dialog").close();
+            pickFile();
+          });
+          action(t("Отмена"), () => $("dialog").close());
+          const elevateButton = action(
+            t("Открыть от имени администратора"),
+            async () => {
+              elevateButton.disabled = true;
+              elevateButton.textContent = t("Ожидаем подтверждения UAC…");
+              try {
+                await rpc("elevate", {
+                  path,
+                  settings: { ...settings, ...overrides },
+                });
+                $("dialog").close();
+              } catch (e) {
+                notify(e.message, true);
+              } finally {
+                elevateButton.disabled = false;
+                elevateButton.textContent = t(
+                  "Открыть от имени администратора",
+                );
+              }
+            },
+            true,
+          );
+        } else {
+          notify(error.message, true);
+          if (!overrides.format && error.canOpenRaw) {
+            showDialog(t("Не удалось разобрать файл"), error.message);
+            action(t("Отмена"), () => $("dialog").close());
+            action(
+              t("Открыть как байты"),
+              () => {
+                $("dialog").close();
+                openFile(path, { format: "hex" });
+              },
+              true,
+            );
+          }
+        }
+      }
     } finally {
       finish(request.id);
     }
@@ -420,6 +590,7 @@
   async function applyQuery() {
     clearTimeout(searchTimer);
     if (!state.file || ["open", "export"].includes(state.jobKind)) return;
+    showTable();
     const version = ++state.queryVersion;
     state.text = $("search").value;
     const request = rpc("query", {
@@ -427,6 +598,7 @@
       query: {
         text: state.text,
         regex: settings.regex,
+        search_mode: settings.searchMode,
         case_sensitive: settings.caseSensitive,
         filters: state.filters,
         sort: state.sort,
@@ -441,6 +613,7 @@
       state.rows = result.rows;
       state.page = 0;
       state.selected = null;
+      state.anchor = null;
       state.applied = JSON.parse(
         JSON.stringify({
           filters: state.filters,
@@ -862,7 +1035,12 @@
       parent.append(el("span", "empty-value", "—"));
       return;
     }
-    if (!state.text || settings.regex) {
+    if (
+      !state.text ||
+      (settings.searchMode !== "text" &&
+        (settings.searchMode === "regex" ||
+          /^(?:ext:|regex:|\(\?)/i.test(state.text)))
+    ) {
       parent.textContent = value;
       return;
     }
@@ -884,7 +1062,7 @@
     parent.append(document.createTextNode(value.slice(from)));
   }
   function render() {
-    if (!state.file) return;
+    if (!state.file || !$("document-pane").hidden) return;
     const g = geometry(),
       layout = layoutColumns(),
       columns = layout.visible,
@@ -901,6 +1079,12 @@
     grid.setAttribute("aria-colcount", layout.all.length);
     renderHeader(columns);
     const fragment = document.createDocumentFragment();
+    const selection = selectionBounds();
+    const selected = (index, column) =>
+      selection &&
+      index >= selection.start &&
+      index <= selection.end &&
+      selection.columns.includes(column);
     let missing = -1;
     for (let i = g.first; i < g.last; i++) {
       const index = pageStart() + i,
@@ -925,16 +1109,18 @@
               ? " pinned"
               : "") +
             (state.types[column.index] === "number" ? " numeric" : "") +
-            (state.selected?.index === index &&
-            state.selected?.column === column.index
-              ? " selected"
-              : ""),
+            (selected(index, column.index) ? " selected" : ""),
         );
         cell.style.left =
           (column.position === 0 && settings.pinFirstColumn ? 0 : column.x) +
           "px";
         cell.style.width = column.width + "px";
         cell.dataset.column = column.index;
+        cell.dataset.index = index;
+        cell.setAttribute(
+          "aria-selected",
+          String(!!selected(index, column.index)),
+        );
         cell.classList.toggle(
           "column-hover",
           state.hoverColumn === column.index,
@@ -948,16 +1134,15 @@
           );
         if (cached && column.index in cached.cells) {
           const text = el("span", "value");
-          appendValue(text, cached.cells[column.index] || "");
+          const value = displayCell(
+            cached.cells[column.index] || "",
+            column.index,
+            cached,
+          );
+          appendValue(text, value);
           cell.append(text);
-          cell.title = cached.cells[column.index] || "";
+          cell.title = value;
         } else cell.append(el("span", "skeleton"));
-        cell.onclick = () => {
-          state.selected = { index, column: column.index };
-          grid.focus({ preventScroll: true });
-          schedule();
-        };
-        cell.ondblclick = () => inspect(index, column.index);
         row.append(cell);
       });
       fragment.append(row);
@@ -969,6 +1154,7 @@
         `cell-${state.selected.index}-${state.selected.column}`,
       );
     else grid.removeAttribute("aria-activedescendant");
+    $("copy-selection").disabled = !selection || !!state.busy;
     $("range").textContent = state.rows
       ? t("{start}–{end} из {total}", {
           start: fmt(
@@ -1051,6 +1237,7 @@
     );
   }
   function updateControls() {
+    $("search-mode").value = settings.searchMode;
     $("page-size").value = settings.pageSize;
     const pages = settings.pageSize
       ? Math.max(1, Math.ceil(state.rows / settings.pageSize))
@@ -1155,11 +1342,149 @@
     if (!cached) throw new Error(t("Дождитесь загрузки строки"));
     return rpc("cell", { revision: state.revision, row: cached.id, column });
   }
-  async function inspect(index, column) {
+  function selectionBounds() {
+    if (!state.selected) return null;
+    const anchor = state.anchor || state.selected;
+    const columns = layoutColumns().all.map((c) => c.index);
+    const a = columns.indexOf(anchor.column),
+      b = columns.indexOf(state.selected.column);
+    if (a < 0 || b < 0) return null;
+    return {
+      start: Math.min(anchor.index, state.selected.index),
+      end: Math.max(anchor.index, state.selected.index),
+      columns: columns.slice(Math.min(a, b), Math.max(a, b) + 1),
+    };
+  }
+  function selectCell(index, column, extend = false) {
+    if (!extend || !state.anchor) state.anchor = { index, column };
     state.selected = { index, column };
+    schedule();
+  }
+  async function copySelection() {
+    if (state.busy || !$("document-pane").hidden) return;
+    const area = selectionBounds();
+    if (!area) return;
+    try {
+      const result = await rpc("copy_range", {
+        revision: state.revision,
+        ...area,
+      });
+      await copy(result.text);
+    } catch (error) {
+      notify(error.message, true);
+    }
+  }
+  function showTable() {
+    $("document-pane").hidden = true;
+    $("table-pane").hidden = false;
+    $("document-toggle").textContent = t("Просмотр");
+    $("copy-selection").hidden = false;
+    ++state.documentVersion;
+    window.timelineViewer.destroy();
+    schedule();
+  }
+  async function showDocument() {
+    if (!state.file) return;
+    const version = ++state.documentVersion;
+    $("document-pane").hidden = false;
+    $("table-pane").hidden = true;
+    $("document-toggle").textContent = t("Таблица");
+    $("copy-selection").hidden = true;
+    $("document-mode").hidden = state.file.kind === "text";
+    $("document-raw-label").hidden = state.file.kind === "text";
+    $("document-wrap").checked = settings.documentWrap;
+    $("document-mode").disabled = $("document-raw").checked;
+    for (const option of $("document-mode").options) {
+      option.hidden =
+        (option.value === "tree" &&
+          !["json", "jsonl"].includes(state.file.kind)) ||
+        (option.value === "preview" && state.file.kind !== "markdown");
+    }
+    $("document-status").hidden = true;
+    $("document-prev").disabled = true;
+    $("document-next").disabled = true;
+    $("document-copy").disabled = true;
+    $("document-search").disabled = true;
+    window.timelineViewer.destroy();
+    $("document-content").textContent = t("Загрузка…");
+    try {
+      const result = await rpc("source", {
+        file: state.file.file,
+        offset: state.documentOffsets[state.documentPage],
+        raw: true,
+      });
+      if (version !== state.documentVersion) return;
+      state.document = result;
+      state.documentOffsets[state.documentPage + 1] = result.next;
+      state.documentLines[state.documentPage + 1] =
+        state.documentLines[state.documentPage] +
+        (result.newline_count ?? (result.text.match(/\n/g) || []).length);
+      const raw = $("document-raw").checked;
+      const mode = raw ? "raw" : $("document-mode").value;
+      const whole = result.whole ?? (result.offset === 0 && result.eof);
+      const text =
+        !raw && mode === "source" && result.kind === "json" && whole
+          ? window.timelineViewer.pretty(result.text)
+          : result.text;
+      const rendered = window.timelineViewer.render(
+        $("document-content"),
+        text,
+        result.kind,
+        mode,
+        state.documentLines[state.documentPage],
+        settings.documentWrap,
+      );
+      $("document-wrap").disabled = !window.timelineViewer.hasEditor();
+      $("document-copy").disabled = false;
+      $("document-search").disabled = false;
+      $("document-status").textContent = rendered?.notice || "";
+      $("document-status").hidden = !rendered?.notice;
+      $("document-prev").disabled = state.documentPage === 0;
+      $("document-next").disabled = result.eof;
+      $("document-prev").hidden = whole;
+      $("document-next").hidden = whole;
+      $("document-range").textContent =
+        result.offset || !result.eof
+          ? t("Фрагмент {number} · поиск по всему файлу — в таблице", {
+              number: state.documentPage + 1,
+            })
+          : t("Строк: {count}", {
+              count: fmt(
+                (result.newline_count ??
+                  (result.text.match(/\n/g) || []).length) + 1,
+              ),
+            });
+    } catch (error) {
+      if (version === state.documentVersion)
+        $("document-content").textContent = error.message;
+    }
+  }
+  async function searchDocument() {
+    if (!state.document) return;
+    if (!window.timelineViewer.hasEditor()) {
+      $("document-mode").value = "source";
+      await showDocument();
+    }
+    window.timelineViewer.search();
+  }
+  function selectedDocumentText() {
+    const selection = window.getSelection();
+    return (
+      window.timelineViewer.selectedText() ||
+      (selection?.rangeCount &&
+      $("document-content").contains(selection.anchorNode)
+        ? selection.toString()
+        : "")
+    );
+  }
+  async function inspect(index, column) {
+    selectCell(index, column);
     const version = ++state.inspectorVersion;
     $("inspector").hidden = false;
     $("cell-value").textContent = t("Загрузка…");
+    state.cell = null;
+    $("cell-mode").hidden = true;
+    $("cell-mode").value = "decoded";
     $("cell-warning").hidden = true;
     $("copy-cell").disabled = true;
     $("cell-label").textContent = t("{name} · строка {number}", {
@@ -1170,13 +1495,27 @@
     try {
       const result = await cellValue(index, column);
       if (version !== state.inspectorVersion) return;
-      $("cell-value").textContent = result.value;
+      state.cell = {
+        ...result,
+        value: displayCell(result.value, column, state.cache.get(index)),
+      };
+      $("cell-mode").hidden = !result.decoded;
+      showCellValue();
       $("cell-warning").hidden = !result.truncated;
       $("copy-cell").disabled = false;
     } catch (error) {
       if (version === state.inspectorVersion)
         $("cell-value").textContent = error.message;
     }
+  }
+  function showCellValue() {
+    if (!state.cell) return;
+    const decoded = state.cell.decoded && $("cell-mode").value === "decoded";
+    $("cell-value").textContent = decoded
+      ? state.cell.decoded
+      : state.cell.decoded
+        ? state.cell.value
+        : window.timelineViewer.pretty(state.cell.value);
   }
   async function copy(text) {
     try {
@@ -1313,13 +1652,19 @@
         draft.caseSensitive,
         (v) => (draft.caseSensitive = v),
       ),
-      checkbox(
-        t("Регулярные выражения"),
-        draft.regex,
-        (v) => (draft.regex = v),
-      ),
     );
     $("dialog-content").append(checks);
+    const searchMode = settingRow(
+      t("Режим поиска"),
+      t(
+        "Авто распознаёт regex:, ext: и (?i). Остальной текст ищется буквально.",
+      ),
+      select(
+        { auto: t("Авто"), text: t("Текст"), regex: "Regex" },
+        draft.searchMode,
+      ),
+    );
+    searchMode.onchange = () => (draft.searchMode = searchMode.value);
     $("dialog-content").append(
       el("h3", "setting-section", t("При следующем открытии файла")),
     );
@@ -1363,12 +1708,18 @@
           csv: "CSV / TSV",
           json: "JSON / JSONL",
           text: t("Текст / журнал"),
+          hex: t("Байты (Hex)"),
         },
         draft.format,
       ),
     );
     format.onchange = () => (draft.format = format.value);
     $("dialog-content").append(
+      checkbox(
+        t("Распознавать таблицы в TXT автоматически"),
+        draft.autoText,
+        (v) => (draft.autoText = v),
+      ),
       checkbox(
         t("Первая строка файла содержит заголовки"),
         draft.header,
@@ -1380,7 +1731,7 @@
       t("Сохранить"),
       () => {
         const searchChanged =
-          draft.regex !== settings.regex ||
+          draft.searchMode !== settings.searchMode ||
           draft.caseSensitive !== settings.caseSensitive;
         const pageSizeChanged = draft.pageSize !== settings.pageSize;
         const languageChanged = draft.language !== settings.language;
@@ -1439,6 +1790,12 @@
       () => {
         state.visible = draft;
         state.visible[0] = true;
+        if (!selectionBounds()) {
+          state.selected = null;
+          state.anchor = null;
+          ++state.inspectorVersion;
+          $("inspector").hidden = true;
+        }
         $("dialog").close();
         invalidate();
       },
@@ -1638,6 +1995,43 @@
     updateChips();
     searchTimer = setTimeout(applyQuery, 320);
   };
+  $("search-mode").value = settings.searchMode;
+  $("search-mode").onchange = () => {
+    settings.searchMode = $("search-mode").value;
+    saveSettings();
+    applyQuery();
+  };
+  $("document-toggle").onclick = () =>
+    $("document-pane").hidden ? showDocument() : showTable();
+  $("binary-toggle").onclick = () => {
+    if (state.file && !state.busy)
+      openFile(state.file.path, {
+        format: state.file.kind === "hex" ? "auto" : "hex",
+      });
+  };
+  $("document-mode").onchange = showDocument;
+  $("document-raw").onchange = showDocument;
+  $("document-wrap").onchange = () => {
+    settings.documentWrap = $("document-wrap").checked;
+    saveSettings();
+    window.timelineViewer.setWrap(settings.documentWrap);
+  };
+  $("document-search").onclick = searchDocument;
+  $("document-copy").onclick = () =>
+    copy(selectedDocumentText() || state.document?.text || "");
+  $("document-prev").onclick = () => {
+    if (state.documentPage > 0) {
+      state.documentPage--;
+      showDocument();
+    }
+  };
+  $("document-next").onclick = () => {
+    if (state.document && !state.document.eof) {
+      state.documentPage++;
+      showDocument();
+    }
+  };
+  $("copy-selection").onclick = copySelection;
   $("clear-search").onclick = () => {
     $("search").value = "";
     applyQuery();
@@ -1668,6 +2062,7 @@
     schedule();
   };
   $("copy-cell").onclick = () => copy($("cell-value").textContent);
+  $("cell-mode").onchange = showCellValue;
   $("dialog-close").onclick = () => $("dialog").close();
   $("dialog").addEventListener("click", (e) => {
     if (e.target === $("dialog")) {
@@ -1716,6 +2111,108 @@
     hoverColumn(cell ? Number(cell.dataset.column) : null);
   });
   grid.addEventListener("pointerleave", () => hoverColumn(null));
+  let selectionDrag = null,
+    selectionFrame = 0,
+    lastCellPointer = null;
+  canvas.addEventListener("pointerdown", (event) => {
+    const cell = event.target.closest(".cell");
+    if (!cell || event.button !== 0 || state.busy) return;
+    event.preventDefault();
+    grid.focus({ preventScroll: true });
+    selectCell(
+      Number(cell.dataset.index),
+      Number(cell.dataset.column),
+      event.shiftKey,
+    );
+    const click = {
+      index: Number(cell.dataset.index),
+      column: Number(cell.dataset.column),
+      time: performance.now(),
+      file: state.file.file,
+    };
+    const doubleClick =
+      !event.shiftKey &&
+      lastCellPointer &&
+      click.file === lastCellPointer.file &&
+      click.index === lastCellPointer.index &&
+      click.column === lastCellPointer.column &&
+      click.time - lastCellPointer.time < 450;
+    lastCellPointer = doubleClick ? null : click;
+    if (doubleClick) {
+      inspect(Number(cell.dataset.index), Number(cell.dataset.column));
+      return;
+    }
+    selectionDrag = {
+      x: event.clientX,
+      y: event.clientY,
+      startX: event.clientX,
+      startY: event.clientY,
+      moved: false,
+      id: event.pointerId,
+    };
+    grid.setPointerCapture(event.pointerId);
+    const tick = () => {
+      if (!selectionDrag) return;
+      if (!selectionDrag.moved) {
+        selectionFrame = requestAnimationFrame(tick);
+        return;
+      }
+      const r = viewport.getBoundingClientRect();
+      const g = geometry();
+      if (selectionDrag.y < r.top + 22)
+        viewport.scrollTop -= rowHeight() / g.ratio;
+      if (selectionDrag.y > r.bottom - 22)
+        viewport.scrollTop += rowHeight() / g.ratio;
+      if (selectionDrag.x < r.left + 22) viewport.scrollLeft -= 18;
+      if (selectionDrag.x > r.right - 22) viewport.scrollLeft += 18;
+      const next = geometry();
+      const index = Math.min(
+        pageStart() + next.count - 1,
+        Math.max(
+          pageStart(),
+          pageStart() +
+            Math.floor(
+              (next.logicalTop +
+                Math.max(0, Math.min(r.height - 1, selectionDrag.y - r.top))) /
+                next.h,
+            ),
+        ),
+      );
+      const x = selectionDrag.x - r.left + viewport.scrollLeft;
+      const all = layoutColumns().all;
+      const column =
+        settings.pinFirstColumn && selectionDrag.x - r.left < frozenWidth()
+          ? all[0]
+          : all.find((c) => x >= c.x && x < c.x + c.width) || all.at(-1);
+      if (column) selectCell(index, column.index, true);
+      selectionFrame = requestAnimationFrame(tick);
+    };
+    selectionFrame = requestAnimationFrame(tick);
+  });
+  grid.addEventListener("pointermove", (event) => {
+    if (selectionDrag) {
+      if (
+        Math.hypot(
+          event.clientX - selectionDrag.startX,
+          event.clientY - selectionDrag.startY,
+        ) > 3
+      ) {
+        selectionDrag.moved = true;
+        lastCellPointer = null;
+      }
+      selectionDrag.x = event.clientX;
+      selectionDrag.y = event.clientY;
+    }
+  });
+  const endSelection = () => {
+    if (selectionDrag && grid.hasPointerCapture(selectionDrag.id))
+      grid.releasePointerCapture(selectionDrag.id);
+    selectionDrag = null;
+    cancelAnimationFrame(selectionFrame);
+  };
+  grid.addEventListener("pointerup", endSelection);
+  grid.addEventListener("pointercancel", endSelection);
+  grid.addEventListener("lostpointercapture", endSelection);
   document.addEventListener(
     "keydown",
     (event) => {
@@ -1787,15 +2284,14 @@
     if (state.busy || !state.rows) return;
     if (e.ctrlKey && e.code === "KeyC" && state.selected) {
       e.preventDefault();
-      try {
-        const result = await cellValue(
-          state.selected.index,
-          state.selected.column,
-        );
-        await copy(result.value);
-      } catch (error) {
-        notify(error.message, true);
-      }
+      await copySelection();
+      return;
+    }
+    if (e.ctrlKey && e.code === "KeyA") {
+      e.preventDefault();
+      const columns = layoutColumns().all;
+      state.anchor = { index: 0, column: columns[0].index };
+      selectCell(state.rows - 1, columns.at(-1).index, true);
       return;
     }
     if (e.key === "Enter" && state.selected) {
@@ -1843,7 +2339,7 @@
     index = Math.max(0, Math.min(state.rows - 1, index));
     c = Math.max(0, Math.min(columns.length - 1, c));
     column = columns[c].index;
-    state.selected = { index, column };
+    selectCell(index, column, e.shiftKey);
     const g = geometry(),
       local = index - pageStart();
     if (
@@ -1869,14 +2365,41 @@
     schedule();
   });
   document.addEventListener("keydown", (e) => {
+    if (e.defaultPrevented) return;
     if (e.ctrlKey && e.code === "KeyO") {
       e.preventDefault();
       pickFile();
     }
     if (e.ctrlKey && e.code === "KeyF" && state.file && !$("dialog").open) {
       e.preventDefault();
-      $("search").focus();
-      $("search").select();
+      if (!$("document-pane").hidden && e.target !== $("search")) {
+        searchDocument();
+      } else {
+        $("search").focus();
+        $("search").select();
+      }
+    }
+    if (
+      e.ctrlKey &&
+      e.code === "KeyC" &&
+      !$("document-pane").hidden &&
+      $("document-content").contains(e.target) &&
+      !e.target.closest(".cm-search")
+    ) {
+      const selected = selectedDocumentText();
+      if (selected) {
+        e.preventDefault();
+        copy(selected);
+      }
+    }
+    if (
+      e.ctrlKey &&
+      !$("document-pane").hidden &&
+      !$("dialog").open &&
+      ["PageUp", "PageDown"].includes(e.code)
+    ) {
+      e.preventDefault();
+      $(e.code === "PageUp" ? "document-prev" : "document-next").click();
     }
     if (e.key === "Escape" && !$("dialog").open) {
       $("notice").hidden = true;

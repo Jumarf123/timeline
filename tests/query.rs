@@ -38,6 +38,118 @@ fn language_localizes_only_generated_headers_and_export() {
     assert!(contents.starts_with("Текст,Column 2 (2),Column 2"));
     assert!(contents.contains("Настройки,Загрузка…,Keep"));
 }
+
+#[test]
+fn copying_ranges_uses_sorted_view_full_values_and_column_order() {
+    let (dir, _data) = fixture("Name,Count,Details\na,20,\"line1\nline2\"\nb,2,plain\nc,5,end\n");
+    let bridge = Arc::new(Bridge::default());
+    let call = |request: Value| {
+        let (tx, rx) = mpsc::channel();
+        bridge.dispatch(request, move |reply| tx.send(reply).unwrap());
+        rx.recv_timeout(Duration::from_secs(10)).unwrap()
+    };
+    let opened = call(json!({"id":1,"command":"open","path":dir.path().join("table.csv")}));
+    assert_eq!(opened["ok"], true);
+    assert_eq!(
+        call(
+            json!({"id":2,"command":"query","file":1,"query":{"sort":{"column":1,"descending":false}}})
+        )["ok"],
+        true
+    );
+    let copied =
+        call(json!({"id":3,"command":"copy_range","revision":2,"start":0,"end":2,"columns":[2,0]}));
+    assert_eq!(
+        copied["data"]["text"],
+        "plain\tb\r\nend\tc\r\n\"line1\nline2\"\ta"
+    );
+    assert_eq!(
+        call(json!({"id":4,"command":"copy_range","revision":2,"start":2,"end":2,"columns":[2]}))["data"]
+            ["text"],
+        "line1\nline2"
+    );
+    assert_eq!(
+        call(json!({"id":5,"command":"copy_range","revision":1,"start":0,"end":0,"columns":[0]}))["ok"],
+        false
+    );
+}
+
+#[test]
+fn source_keeps_original_json_and_unicode_across_chunks() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("source.json");
+    let original = "{ \"id\":9007199254740993, \"decimal\":1.2300, \"empty\":null }\r\n";
+    fs::write(&path, original).unwrap();
+    let bridge = Arc::new(Bridge::default());
+    assert_eq!(
+        send(&bridge, json!({"id":1,"command":"open","path":path}))["ok"],
+        true
+    );
+    let source = send(&bridge, json!({"id":2,"command":"source","file":1}));
+    assert_eq!(source["data"]["text"], original);
+    assert_eq!(source["data"]["whole"], true);
+    assert_eq!(source["data"]["newline_count"], 1);
+
+    let path = dir.path().join("chunks.txt");
+    let prefix = "x".repeat(8 * 1024 * 1024 - 1);
+    // The first fragment ends at the newline. A BOM in the next fragment is data.
+    let original = format!("{prefix}\n\u{feff}😀Привет\nlast");
+    fs::write(&path, &original).unwrap();
+    assert_eq!(
+        send(&bridge, json!({"id":3,"command":"open","path":path}))["ok"],
+        true
+    );
+    let first = send(&bridge, json!({"id":4,"command":"source","file":3}));
+    assert_eq!(first["data"]["whole"], false);
+    let second = send(
+        &bridge,
+        json!({"id":5,"command":"source","file":3,"offset":first["data"]["next"]}),
+    );
+    assert_eq!(second["data"]["eof"], true);
+    assert!(
+        second["data"]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with('\u{feff}')
+    );
+    assert_eq!(
+        format!(
+            "{}{}",
+            first["data"]["text"].as_str().unwrap(),
+            second["data"]["text"].as_str().unwrap()
+        ),
+        original
+    );
+}
+
+#[test]
+fn cell_inspection_decodes_hex_text_without_changing_original() {
+    let original = include_str!("fixtures/binary-url.hex").trim();
+    let (dir, _data) = fixture(&format!("Payload\n{original}\n"));
+    let bridge = Arc::new(Bridge::default());
+    assert_eq!(
+        send(
+            &bridge,
+            json!({"id":1,"command":"open","path":dir.path().join("table.csv")})
+        )["ok"],
+        true
+    );
+    let cell = send(
+        &bridge,
+        json!({"id":2,"command":"cell","revision":1,"row":0,"column":0}),
+    );
+    assert_eq!(cell["data"]["value"], original);
+    assert!(
+        cell["data"]["decoded"]
+            .as_str()
+            .unwrap()
+            .starts_with("http://example.test/")
+    );
+    let copy = send(
+        &bridge,
+        json!({"id":3,"command":"copy_range","revision":1,"start":0,"end":0,"columns":[0]}),
+    );
+    assert_eq!(copy["data"]["text"], original);
+}
 fn sorted(data: &Dataset, column: usize, descending: bool) -> query::View {
     query::execute(
         data,
@@ -193,6 +305,16 @@ fn sorted_random_offsets_handle_multiline_records_and_export_order() {
         view.export(&data, &data.original_path, &Progress::default())
             .is_err()
     );
+    let alias = data
+        .original_path
+        .parent()
+        .unwrap()
+        .join(".")
+        .join("table.csv");
+    let error = view
+        .export(&data, &alias, &Progress::default())
+        .unwrap_err();
+    assert!(error.to_string().contains("Нельзя перезаписать"));
 }
 
 #[test]

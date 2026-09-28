@@ -94,6 +94,95 @@ pub fn compile_pattern(spec: &FindSpec) -> Result<Regex> {
         .context("Некорректное регулярное выражение")
 }
 
+#[derive(Clone, Copy, Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchMode {
+    #[default]
+    Auto,
+    Text,
+    Regex,
+}
+
+/// Compile once per query; clones give scan workers independent regex scratch space.
+#[derive(Clone)]
+pub struct TableSearch {
+    pattern: Regex,
+    extensions: Vec<String>,
+}
+impl TableSearch {
+    pub fn new(text: &str, mode: SearchMode, case_sensitive: bool) -> Result<Self> {
+        let mut pattern = text;
+        let mut extensions = Vec::new();
+        let mut is_regex = matches!(mode, SearchMode::Regex);
+        if !matches!(mode, SearchMode::Text) {
+            pattern = pattern.trim();
+            if pattern
+                .get(..4)
+                .is_some_and(|s| s.eq_ignore_ascii_case("ext:"))
+            {
+                let end = pattern.find(char::is_whitespace).unwrap_or(pattern.len());
+                for extension in pattern[4..end].split(';') {
+                    let extension = extension.trim_start_matches('.');
+                    if extension.is_empty() || extension.contains(['/', '\\', ':', '*', '?']) {
+                        bail!("Некорректный список ext: (пример: ext:exe;jar;zip)");
+                    }
+                    extensions.push(extension.to_ascii_lowercase());
+                }
+                pattern = pattern[end..].trim_start();
+            }
+            if pattern
+                .get(..6)
+                .is_some_and(|s| s.eq_ignore_ascii_case("regex:"))
+            {
+                pattern = &pattern[6..];
+                is_regex = true;
+            } else if pattern.starts_with("(?") {
+                is_regex = true;
+            }
+        }
+        let pattern = if is_regex {
+            pattern.to_owned()
+        } else {
+            regex::escape(pattern)
+        };
+        Ok(Self {
+            pattern: RegexBuilder::new(&pattern)
+                .case_insensitive(!case_sensitive)
+                .size_limit(32 * 1024 * 1024)
+                .dfa_size_limit(16 * 1024 * 1024)
+                .build()
+                .context("Некорректное регулярное выражение")?,
+            extensions,
+        })
+    }
+
+    pub fn matches_value(&self, value: &str) -> bool {
+        if !self.extensions.is_empty() {
+            let path = value.trim().trim_matches('"');
+            let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+            // NTFS alternate streams inherit the base file's extension.
+            let name = name.split(':').next().unwrap_or(name);
+            let Some((_, extension)) = name.rsplit_once('.') else {
+                return false;
+            };
+            if !self
+                .extensions
+                .iter()
+                .any(|e| extension.eq_ignore_ascii_case(e))
+            {
+                return false;
+            }
+        }
+        self.pattern.is_match(value)
+    }
+
+    pub fn matches(&self, record: &ByteRecord) -> bool {
+        record
+            .iter()
+            .any(|v| self.matches_value(std::str::from_utf8(v).unwrap_or("")))
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct CompiledFilter {
     column: usize,
@@ -369,9 +458,7 @@ pub fn export_csv(
     progress: &Progress,
 ) -> Result<u64> {
     // Write atomically beside the destination. The input remains read-only.
-    if path == dataset.original_path || path == dataset.path {
-        bail!("Нельзя перезаписать исходный файл");
-    }
+    dataset.check_export_path(path)?;
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())

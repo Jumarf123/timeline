@@ -229,6 +229,56 @@ fn json_lines_bom_scalars_and_malformed_input() {
 }
 
 #[test]
+fn jsonl_arrays_are_records_and_keep_large_numbers() {
+    let (_dir, data) = fixture(
+        "arrays.jsonl",
+        b"[9007199254740993,2]\n[3,4]\n",
+        Default::default(),
+    );
+    assert_eq!(data.rows, 2);
+    assert_eq!(&data.record(0).unwrap()[0], b"[9007199254740993,2]");
+    assert_eq!(&data.record(1).unwrap()[0], b"[3,4]");
+}
+
+#[test]
+fn dat_with_binary_after_text_probe_or_bad_bom_has_readable_fallback() {
+    let dir = TempDir::new().unwrap();
+    for (name, mut bytes) in [
+        ("late.dat", b"header text\n".repeat(16_000)),
+        ("bad-bom.dat", vec![0xff, 0xfe, 0x00, 0xd8, 0xff]),
+    ] {
+        bytes.extend([0xff, 0, 0]);
+        bytes.extend(
+            "http://example.test/evidence"
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes),
+        );
+        bytes.extend([0, 0]);
+        let path = dir.path().join(name);
+        fs::write(&path, &bytes).unwrap();
+        let data = Dataset::open(&path, &Default::default(), &Arc::default()).unwrap();
+        assert_eq!(data.kind, "binary");
+        assert!(
+            data.warnings
+                .iter()
+                .any(|message| message.contains("Could not fully parse"))
+        );
+        let records: Vec<_> = data
+            .reader_at(0)
+            .unwrap()
+            .records()
+            .map(Result::unwrap)
+            .collect();
+        assert!(records.iter().any(|record| {
+            record
+                .iter()
+                .any(|value| value.contains("http://example.test/evidence"))
+        }));
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
+}
+
+#[test]
 fn text_preserves_empty_lines_and_quoted_text() {
     let (_dir, data) = fixture(
         "a.txt",

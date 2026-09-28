@@ -1,4 +1,4 @@
-//! Streaming import and sparse, record-aware indexing. No entire-file allocations.
+//! Streaming import and sparse, record-aware indexing for large tables.
 use anyhow::{Context, Result, bail};
 use csv::{ByteRecord, Position, Reader, ReaderBuilder, Writer};
 use encoding_rs::{UTF_16BE, UTF_16LE, WINDOWS_1251, WINDOWS_1252};
@@ -11,7 +11,7 @@ use std::{
     io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
@@ -29,6 +29,8 @@ pub enum Format {
     Csv,
     Json,
     Text,
+    Structured,
+    Hex,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -48,6 +50,7 @@ pub struct OpenOptionsConfig {
     pub delimiter: Option<u8>,
     pub header: bool,
     pub encoding: Encoding,
+    pub auto_text: bool,
 }
 
 impl Default for OpenOptionsConfig {
@@ -57,6 +60,7 @@ impl Default for OpenOptionsConfig {
             delimiter: None,
             header: true,
             encoding: Encoding::Auto,
+            auto_text: true,
         }
     }
 }
@@ -65,10 +69,27 @@ impl Default for OpenOptionsConfig {
 pub struct Progress {
     pub done: AtomicU64,
     pub total: AtomicU64,
+    pub records: AtomicU64,
     pub cancelled: AtomicBool,
+    phase: Mutex<(&'static str, &'static str)>,
 }
 
 impl Progress {
+    pub fn begin(&self, phase: &'static str, total: u64, unit: &'static str) {
+        let mut state = self.phase.lock().unwrap();
+        self.done.store(0, Ordering::Relaxed);
+        self.total.store(total, Ordering::Relaxed);
+        self.records.store(0, Ordering::Relaxed);
+        *state = (phase, unit);
+    }
+    pub fn snapshot(&self) -> serde_json::Value {
+        let state = self.phase.lock().unwrap();
+        let (phase, unit) = *state;
+        let total = self.total.load(Ordering::Relaxed);
+        serde_json::json!({"phase":phase,"unit":unit,"done":self.done.load(Ordering::Relaxed),
+            "total":total,"records":self.records.load(Ordering::Relaxed),
+            "fraction":if total == 0 {None} else {Some(self.fraction())}})
+    }
     pub fn check(&self) -> Result<()> {
         if self.cancelled.load(Ordering::Relaxed) {
             bail!("Операция отменена");
@@ -85,6 +106,70 @@ impl Progress {
     }
 }
 
+/// Buffer outside this reader so progress/cancellation is checked per I/O block,
+/// rather than for every byte consumed by a JSON deserializer.
+pub(crate) struct TrackedReader<'a, R> {
+    pub input: R,
+    pub progress: &'a Progress,
+}
+impl<R: Read> Read for TrackedReader<'_, R> {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        self.progress.check().map_err(std::io::Error::other)?;
+        let n = self.input.read(bytes)?;
+        self.progress.done.fetch_add(n as u64, Ordering::Relaxed);
+        Ok(n)
+    }
+}
+impl<R: Seek> Seek for TrackedReader<'_, R> {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        self.input.seek(pos)
+    }
+}
+
+fn looks_like_json(text: &str) -> bool {
+    // Logs such as [2026-09-27 12:00] must remain text. An incomplete but
+    // syntactically valid JSON prefix is enough for files larger than the probe.
+    if !text.starts_with(['{', '[']) {
+        return false;
+    }
+    match serde_json::Deserializer::from_str(text)
+        .into_iter::<Value>()
+        .next()
+    {
+        Some(Ok(_)) => true,
+        Some(Err(error)) => error.is_eof(),
+        None => false,
+    }
+}
+
+fn structured_or_readable(
+    path: &Path,
+    progress: &Progress,
+    kind: &mut String,
+    parse: impl FnOnce() -> Result<crate::formats::Normalized>,
+) -> Result<crate::formats::Normalized> {
+    let result =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(parse)).unwrap_or_else(|_| {
+            Err(anyhow::anyhow!(
+                "Parser failed on a damaged or unsupported structure"
+            ))
+        });
+    match result {
+        Ok(result) => Ok(result),
+        Err(error) => {
+            progress.check()?;
+            let format = kind.clone();
+            *kind = "binary".into();
+            progress.begin("parse", std::fs::metadata(path)?.len(), "bytes");
+            let mut result = crate::formats::binary_readable(path, progress)?;
+            result.warnings.insert(0, format!(
+                "Could not fully parse {format}: {error:#}. Showing extracted strings; original bytes are available in Hex mode."
+            ));
+            Ok(result)
+        }
+    }
+}
+
 pub struct Dataset {
     pub original_path: PathBuf,
     pub path: PathBuf,
@@ -96,6 +181,10 @@ pub struct Dataset {
     pub checkpoints: Vec<Position>,
     pub irregular_rows: u64,
     pub description: String,
+    pub kind: String,
+    pub source_path: PathBuf,
+    pub warnings: Vec<String>,
+    pub acquisition: String,
     // Keep Windows read locks and temporary files alive until all workers release the dataset.
     _source: File,
     _temporary: Vec<TempPath>,
@@ -134,27 +223,85 @@ pub fn csv_reader(path: &Path, delimiter: u8) -> Result<Reader<File>> {
 }
 
 impl Dataset {
+    pub(crate) fn check_export_path(&self, destination: &Path) -> Result<()> {
+        let canonical = std::fs::canonicalize(destination).ok();
+        for source in [&self.original_path, &self.path, &self.source_path] {
+            let same = destination == source
+                || canonical.as_ref().is_some_and(|destination| {
+                    std::fs::canonicalize(source).is_ok_and(|source| {
+                        #[cfg(windows)]
+                        {
+                            destination.to_string_lossy().to_lowercase()
+                                == source.to_string_lossy().to_lowercase()
+                        }
+                        #[cfg(not(windows))]
+                        {
+                            *destination == source
+                        }
+                    })
+                });
+            if same {
+                bail!("Нельзя перезаписать исходный файл");
+            }
+        }
+        Ok(())
+    }
+
     pub fn open(
         path: &Path,
         options: &OpenOptionsConfig,
         progress: &Arc<Progress>,
     ) -> Result<Arc<Self>> {
-        let source = open_read(path)?;
+        match Self::open_inner(path, options, progress, false) {
+            Ok(data) => Ok(data),
+            Err(error)
+                if options.format == Format::Auto
+                    && path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+                        ["dat", "edb", "bin"]
+                            .iter()
+                            .any(|known| e.eq_ignore_ascii_case(known))
+                    })
+                    && error
+                        .downcast_ref::<crate::native::NeedsElevation>()
+                        .is_none() =>
+            {
+                progress.check()?;
+                let mut data = Self::open_inner(path, options, progress, true)
+                    .with_context(|| format!("Automatic import failed: {error:#}"))?;
+                Arc::get_mut(&mut data).expect("new dataset is exclusively owned").warnings.insert(0,
+                    format!("Could not fully parse binary file: {error:#}. Showing extracted strings; original bytes are available in Hex mode."));
+                Ok(data)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn open_inner(
+        path: &Path,
+        options: &OpenOptionsConfig,
+        progress: &Arc<Progress>,
+        force_readable: bool,
+    ) -> Result<Arc<Self>> {
+        progress.begin("read", 0, "bytes");
+        let acquired = crate::native::acquire(path, progress)?;
+        let source = open_read(&acquired.path)?;
         let bytes = source.metadata()?.len();
         progress.total.store(bytes, Ordering::Relaxed);
-        let mut probe = open_read(path)?;
+        let mut probe = open_read(&acquired.path)?;
         let mut sample = vec![0; 128 * 1024];
         let len = probe.read(&mut sample)?;
         sample.truncate(len);
         let encoding = match options.encoding {
+            _ if options.format == Format::Hex || force_readable => Encoding::Utf8,
             Encoding::Auto if sample.starts_with(&[0xFF, 0xFE]) => Encoding::Utf16Le,
             Encoding::Auto if sample.starts_with(&[0xFE, 0xFF]) => Encoding::Utf16Be,
             Encoding::Auto => Encoding::Utf8,
             value => value,
         };
-        let mut temporary = Vec::new();
-        let mut backing = path.to_owned();
+        let mut temporary = acquired.temporary;
+        let mut backing = acquired.path;
         if encoding != Encoding::Utf8 {
+            progress.begin("decode", bytes, "bytes");
             let encoding_rs = match encoding {
                 Encoding::Utf16Le => UTF_16LE,
                 Encoding::Utf16Be => UTF_16BE,
@@ -162,7 +309,7 @@ impl Dataset {
                 Encoding::Windows1252 => WINDOWS_1252,
                 _ => unreachable!(),
             };
-            let temp = transcode(path, encoding_rs, progress)?;
+            let temp = transcode(&backing, encoding_rs, progress)?;
             backing = temp.path().to_owned();
             temporary.push(temp.into_temp_path());
             let mut file = open_read(&backing)?;
@@ -176,10 +323,85 @@ impl Dataset {
             .unwrap_or("")
             .to_ascii_lowercase();
         let guessed_delimiter = detect_delimiter(&sample);
+        let source_path = backing.clone();
+        progress.begin("parse", std::fs::metadata(&backing)?.len(), "bytes");
+        let text_sample = String::from_utf8_lossy(&sample);
+        let leading = text_sample.trim_start_matches('\u{feff}').trim_start();
+        let mut kind = crate::formats::source_kind(&extension)
+            .unwrap_or("table")
+            .to_owned();
+        let structured = if force_readable {
+            kind = "binary".into();
+            Some(crate::formats::binary_readable(&backing, progress)?)
+        } else if options.format == Format::Hex {
+            kind = "hex".into();
+            Some(crate::formats::hex(&backing, progress)?)
+        } else if options.format != Format::Auto {
+            None
+        } else if acquired.method == "usn-api"
+            || extension == "usn"
+            || crate::native::is_usn_journal_path(path)
+        {
+            kind = "usn".into();
+            Some(crate::formats::usn(&backing, progress)?)
+        } else if extension == "arn"
+            && sample.starts_with(&[0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1])
+        {
+            kind = "arn".into();
+            Some(crate::formats::arn(&backing, progress)?)
+        } else if sample.starts_with(b"ElfFile\0") || extension == "evtx" {
+            kind = "evtx".into();
+            Some(crate::formats::evtx(&backing, progress)?)
+        } else if sample.starts_with(b"regf") {
+            kind = "registry".into();
+            Some(structured_or_readable(
+                &backing,
+                progress,
+                &mut kind,
+                || crate::formats::registry(&backing, progress),
+            )?)
+        } else if sample.starts_with(b"SQLite format 3\0") {
+            kind = "sqlite".into();
+            Some(crate::formats::sqlite(&backing, progress)?)
+        } else if sample.get(4..8) == Some(&[0xEF, 0xCD, 0xAB, 0x89]) {
+            kind = "ese".into();
+            Some(structured_or_readable(
+                &backing,
+                progress,
+                &mut kind,
+                || crate::formats::ese(&backing, progress),
+            )?)
+        } else if extension == "xml"
+            || leading.starts_with("<?xml")
+            || leading.starts_with('<')
+                && !["md", "markdown", "html", "htm"].contains(&extension.as_str())
+        {
+            kind = "xml".into();
+            Some(crate::formats::xml(&backing, progress)?)
+        } else if crate::formats::is_binary(&sample)
+            || std::str::from_utf8(&sample).is_err_and(|error| error.error_len().is_some())
+        {
+            kind = "binary".into();
+            Some(crate::formats::binary_readable(&backing, progress)?)
+        } else if options.auto_text
+            && kind == "table"
+            && let Some(headers) = crate::formats::text_table(&sample)
+        {
+            Some(crate::formats::normalize_text_table(
+                &backing, headers, progress,
+            )?)
+        } else {
+            None
+        };
         let format = match options.format {
+            Format::Hex => Format::Structured,
+            Format::Auto if structured.is_some() => Format::Structured,
+            Format::Auto if crate::formats::source_kind(&extension).is_some() => Format::Text,
             Format::Auto if ["json", "jsonl", "ndjson"].contains(&extension.as_str()) => {
                 Format::Json
             }
+            Format::Auto if looks_like_json(leading) => Format::Json,
+            Format::Auto if extension == "txt" && !options.auto_text => Format::Text,
             Format::Auto
                 if ["csv", "tsv", "psv"].contains(&extension.as_str())
                     || options.delimiter.is_some()
@@ -192,11 +414,27 @@ impl Dataset {
         };
         let mut headers = Vec::new();
         let mut generated_headers = Vec::new();
+        let mut warnings = Vec::new();
         let delimiter;
         let has_header;
         match format {
+            Format::Structured => {
+                let result = structured.context("No structured importer")?;
+                backing = result.file.path().to_owned();
+                temporary.push(result.file.into_temp_path());
+                headers = result.headers;
+                warnings = result.warnings;
+                delimiter = b',';
+                has_header = false;
+            }
             Format::Json => {
-                let (temp, names) = normalize_json(&backing, progress)?;
+                kind = if ["jsonl", "ndjson"].contains(&extension.as_str()) {
+                    "jsonl"
+                } else {
+                    "json"
+                }
+                .into();
+                let (temp, names) = normalize_json(&backing, kind == "jsonl", progress)?;
                 backing = temp.path().to_owned();
                 temporary.push(temp.into_temp_path());
                 headers = names;
@@ -204,6 +442,9 @@ impl Dataset {
                 has_header = false;
             }
             Format::Text => {
+                if kind == "table" {
+                    kind = "text".into();
+                }
                 let mut temp = NamedTempFile::new()?;
                 {
                     let mut writer = Writer::from_writer(temp.as_file_mut());
@@ -235,6 +476,7 @@ impl Dataset {
                         } else {
                             &line
                         }])?;
+                        progress.records.fetch_add(1, Ordering::Relaxed);
                         first_line = false;
                     }
                     writer.flush()?;
@@ -282,10 +524,7 @@ impl Dataset {
         let mut rows = 0u64;
         let mut irregular_rows = 0;
         let mut widest = expected;
-        progress.done.store(0, Ordering::Relaxed);
-        progress
-            .total
-            .store(std::fs::metadata(&backing)?.len(), Ordering::Relaxed);
+        progress.begin("index", std::fs::metadata(&backing)?.len(), "bytes");
         if std::fs::metadata(&backing)?.len() >= 32 * 1024 * 1024 {
             let indexed = parallel_index(
                 &backing,
@@ -316,6 +555,7 @@ impl Dataset {
                     progress.check()?;
                     position.set_record(rows);
                     checkpoints.push(position);
+                    progress.records.store(rows, Ordering::Relaxed);
                     progress
                         .done
                         .store(reader.position().byte(), Ordering::Relaxed);
@@ -343,6 +583,7 @@ impl Dataset {
             }
         }
         make_headers_unique(&mut headers);
+        progress.records.store(rows, Ordering::Relaxed);
         progress
             .done
             .store(progress.total.load(Ordering::Relaxed), Ordering::Relaxed);
@@ -360,8 +601,23 @@ impl Dataset {
             description: format!(
                 "{} · {}",
                 match format {
+                    Format::Json if kind == "jsonl" => "JSONL",
                     Format::Json => "JSON",
+                    Format::Text if kind == "markdown" => "Markdown",
+                    Format::Text if kind != "text" => "Source",
                     Format::Text => "TXT",
+                    Format::Structured => match kind.as_str() {
+                        "evtx" => "EVTX",
+                        "xml" => "XML",
+                        "arn" => "Autoruns",
+                        "registry" => "Registry",
+                        "sqlite" => "SQLite",
+                        "ese" => "ESE / EDB",
+                        "usn" => "USN Journal",
+                        "hex" => "Hex",
+                        "binary" => "Binary strings",
+                        _ => "TXT table",
+                    },
                     _ => "CSV",
                 },
                 match encoding {
@@ -372,6 +628,10 @@ impl Dataset {
                     _ => "UTF-8",
                 }
             ),
+            kind,
+            source_path,
+            warnings,
+            acquisition: acquired.method.into(),
             _source: source,
             _temporary: temporary,
         }))
@@ -904,7 +1164,11 @@ impl<'de, F: FnMut(Value) -> Result<()>> Visitor<'de> for JsonRows<'_, F> {
     }
 }
 
-fn normalize_json(path: &Path, progress: &Progress) -> Result<(NamedTempFile, Vec<String>)> {
+fn normalize_json(
+    path: &Path,
+    json_lines: bool,
+    progress: &Progress,
+) -> Result<(NamedTempFile, Vec<String>)> {
     let mut temp = NamedTempFile::new()?;
     let mut names = Vec::new();
     {
@@ -912,7 +1176,13 @@ fn normalize_json(path: &Path, progress: &Progress) -> Result<(NamedTempFile, Ve
         let mut writer = csv::WriterBuilder::new()
             .flexible(true)
             .from_writer(temp.as_file_mut());
-        let mut input = BufReader::with_capacity(256 * 1024, open_read(path)?);
+        let mut input = BufReader::with_capacity(
+            256 * 1024,
+            TrackedReader {
+                input: open_read(path)?,
+                progress,
+            },
+        );
         let mut prefix = [0u8; 3];
         let n = input.read(&mut prefix)?;
         input.seek(SeekFrom::Start(if n == 3 && prefix == [0xEF, 0xBB, 0xBF] {
@@ -953,9 +1223,10 @@ fn normalize_json(path: &Path, progress: &Progress) -> Result<(NamedTempFile, Ve
                 record[index] = text;
             }
             writer.write_record(record)?;
+            progress.records.fetch_add(1, Ordering::Relaxed);
             Ok(())
         };
-        if first == Some(b'[') {
+        if first == Some(b'[') && !json_lines {
             let mut deserializer = serde_json::Deserializer::from_reader(input);
             deserializer
                 .deserialize_seq(JsonRows(&mut append))

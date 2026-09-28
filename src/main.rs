@@ -56,6 +56,7 @@ fn run() -> anyhow::Result<()> {
         .with_window_icon(Some(icon))
         .with_inner_size(LogicalSize::new(1440., 900.))
         .with_min_inner_size(LogicalSize::new(860., 580.))
+        .with_maximized(true)
         // Reveal only after CSS and the first layout are ready. No black/white flash.
         .with_visible(false)
         .build(&event_loop)?;
@@ -66,6 +67,10 @@ fn run() -> anyhow::Result<()> {
     let html = include_str!("../web/index.html")
         .replace("/* INLINE_STYLE */", include_str!("../web/styles.css"))
         .replace("/* INLINE_I18N */", include_str!("../web/i18n.js"))
+        .replace(
+            "/* INLINE_VIEWER */",
+            include_str!("../web/viewer.bundle.js"),
+        )
         .replace("/* INLINE_SCRIPT */", include_str!("../web/app.js"));
     let profile = std::env::var_os("TIMELINE_PROFILE")
         .map(std::path::PathBuf::from)
@@ -75,11 +80,28 @@ fn run() -> anyhow::Result<()> {
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(std::env::temp_dir)
                 .join("Timeline")
-                .join("WebView")
+                .join(if timeline::native::is_elevated() {
+                    "WebView-admin"
+                } else {
+                    "WebView"
+                })
         });
     std::fs::create_dir_all(&profile)?;
     let mut web_context = WebContext::new(Some(profile));
     let builder = WebViewBuilder::new_with_web_context(&mut web_context)
+        .with_initialization_script(
+            std::env::args()
+                .nth(2)
+                .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                .filter(Value::is_object)
+                .map(|s| {
+                    format!(
+                        "localStorage.setItem('timeline.settings', {});",
+                        serde_json::to_string(&s.to_string()).unwrap()
+                    )
+                })
+                .unwrap_or_default(),
+        )
         .with_initialization_script(format!(
             "window.timelineRegion = {};",
             serde_json::to_string(&locale::system_region())?
@@ -179,6 +201,9 @@ fn run() -> anyhow::Result<()> {
                 if !ready {
                     ready = true;
                     window.set_visible(true);
+                    // Showing an initially hidden window may restore its normal
+                    // size on Windows; maximize after the first visible layout.
+                    window.set_maximized(true);
                     if let Some(path) = argument.take() {
                         send(json!({"event":"open", "path":path}));
                     }

@@ -38,9 +38,31 @@ test("language changes translate messages and preserve interpolation values", ()
   assert.equal(locale.number(21159937).replace(/\s/g, ""), "21159937");
 });
 
+test("parser diagnostics are localized while preserving technical details", () => {
+  const locale = create("RU");
+  const diagnostic =
+    "Could not fully parse ESE: page 42 is invalid. Showing extracted strings; original bytes are available in Hex mode.";
+  assert.match(
+    locale.diagnostic(diagnostic),
+    /Не удалось полностью разобрать ESE: page 42 is invalid/,
+  );
+  assert.match(
+    locale.diagnostic(
+      "No confidently readable text was found. Open as Hex to inspect all original bytes.",
+    ),
+    /Читаемый текст не обнаружен/,
+  );
+  locale.setLanguage("en");
+  assert.equal(locale.diagnostic(diagnostic), diagnostic);
+});
+
 test("every app-owned string has an English translation with matching placeholders", () => {
   const { english } = create("US");
-  const app = readFileSync(new URL("../web/app.js", import.meta.url), "utf8");
+  const app = ["app.js", "viewer-entry.js"]
+    .map((name) =>
+      readFileSync(new URL(`../web/${name}`, import.meta.url), "utf8"),
+    )
+    .join("\n");
   const quoted = [...app.matchAll(/"(?:\\.|[^"\\])*"/g)].map((m) =>
     JSON.parse(m[0]),
   );
